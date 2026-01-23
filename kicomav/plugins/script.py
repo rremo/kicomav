@@ -9,17 +9,13 @@ This plugin handles script format detection, malware detection, and extraction.
 
 import contextlib
 import hashlib
-import logging
 import os
 import re
 
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 KICOMAV_BAT_MAGIC = b"<KicomAV:BAT>"
 
@@ -124,7 +120,16 @@ class KavMain(ArchivePluginBase):
             fileformat = {}
             mm = filehandle
 
-            buf = mm.read(4096) if hasattr(mm, "read") else mm[:4096]
+            # Read file data using slicing (preferred for mmap/bytes)
+            # or seek+read for file-like objects (BytesIO, etc.)
+            try:
+                # Try slicing first (works for mmap, bytes, bytearray)
+                buf = mm[:4096]
+            except TypeError:
+                # Fall back to seek+read for file-like objects
+                if hasattr(mm, "seek"):
+                    mm.seek(0)
+                buf = mm.read(4096)
 
             if kavutil.is_textfile(buf):
                 buf_str = buf.decode("latin-1")
@@ -168,9 +173,9 @@ class KavMain(ArchivePluginBase):
                     return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -210,7 +215,7 @@ class KavMain(ArchivePluginBase):
                 t_set = p.findall(mm_buf)
                 t_count = 0
                 for k in t_set:
-                    p = re.compile(b"echo\s+.+?%s" % k)
+                    p = re.compile(b"echo\\s+.+?%s" % k)
                     if p.search(mm_buf):
                         t_count += 1
 
@@ -239,9 +244,9 @@ class KavMain(ArchivePluginBase):
                         return True, vname, 0, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -262,9 +267,9 @@ class KavMain(ArchivePluginBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False
 
@@ -285,7 +290,14 @@ class KavMain(ArchivePluginBase):
         elif "ff_iframe" in fileformat:
             file_scan_list.append(["arc_iframe", "IFrame"])
         elif "ff_bat" in fileformat:
-            file_scan_list.append(["arc_bat", "BAT"])
+            # Skip already processed BAT files to prevent infinite loop
+            try:
+                with open(filename, "rb") as f:
+                    if f.read(13) != KICOMAV_BAT_MAGIC:
+                        file_scan_list.append(["arc_bat", "BAT"])
+            except (IOError, OSError):
+                # If file can't be read, still add to list (let unarc handle it)
+                file_scan_list.append(["arc_bat", "BAT"])
 
         return file_scan_list
 
@@ -318,9 +330,9 @@ class KavMain(ArchivePluginBase):
                 return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
 
@@ -347,9 +359,9 @@ class KavMain(ArchivePluginBase):
                 return self.update_html_scripts(obj, buf, file_infos, arc_name)
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False
 
@@ -388,7 +400,3 @@ class KavMain(ArchivePluginBase):
             fp.write(org_buf[start_pos:].encode("latin-1"))
 
         return True
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        pass

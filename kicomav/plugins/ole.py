@@ -8,19 +8,13 @@ This plugin handles OLE (Object Linking and Embedding) file format for scanning 
 """
 
 import contextlib
-import logging
 import os
-import sys
 import struct
-import types
 
 from kicomav.plugins import kernel
 from kicomav.plugins import kavutil
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 __version__ = "1.0"
 
@@ -194,9 +188,10 @@ def is_olefile(filename):
 # OleFile class
 # ---------------------------------------------------------------------
 class OleFile:
-    def __init__(self, input_data, write_mode=False, verbose=False):
+    def __init__(self, input_data, write_mode=False, verbose=False, logger=None):
         self.verbose = verbose  # For debugging
         self.isfile = False  # Is file accessed?
+        self.logger = kavutil.get_logger(logger)
 
         if not isinstance(input_data, str):
             raise Error("Input data is invalid.")
@@ -266,9 +261,7 @@ class OleFile:
             kavutil.vprint("Header")
             kavutil.vprint(None, "Big Block Size", "%d" % self.bsize)
             kavutil.vprint(None, "Small Block Size", "%d" % self.ssize)
-            print()
             kavutil.HexDump().Buffer(self.mm, 0, 0x60)
-            print()
 
         if self.bsize % 0x200 != 0 or self.ssize != 0x40:  # Invalid file information
             return False
@@ -311,9 +304,7 @@ class OleFile:
         if self.verbose:
             with open("bbd.dmp", "wb") as f:
                 f.write(self.bbd)
-            print()
             kavutil.vprint("BBD")
-            print()
             kavutil.HexDump().Buffer(self.bbd, 0, 0x80)
 
         # Read root
@@ -328,10 +319,8 @@ class OleFile:
         if self.verbose:
             with open("root.dmp", "wb") as f:
                 f.write(self.root)
-            print()
             kavutil.vprint("ROOT")
             kavutil.vprint(None, "Start Blocks", "%d" % root_startblock)
-            print()
             kavutil.HexDump().Buffer(self.root, 0, 0x80)
 
         # Read sbd
@@ -351,11 +340,9 @@ class OleFile:
         if self.verbose:
             with open("sbd.dmp", "wb") as f:
                 f.write(self.sbd)
-            print()
             kavutil.vprint("SBD")
             kavutil.vprint(None, "Start Blocks", "%d" % sbd_startblock)
             kavutil.vprint(None, "Num of SBD Blocks", "%d" % num_of_sbd_blocks)
-            print()
             kavutil.HexDump().Buffer(self.sbd, 0, 0x80)
 
         # Read pps
@@ -407,23 +394,12 @@ class OleFile:
             return False
 
         if self.verbose:
-            print()
             kavutil.vprint("Property Storage")
-            """
-            print '    %-2s %-20s %4s %-8s %-8s %-8s %-8s %-8s' % ('No', 'Name', 'Type', 'Prev', 'Next', 'Dir', 'SB',
-                                                                   'Size')
-            print '    ' + ('-' * 74)
-
-            for p in self.pps:
-                print '    ' + '%2d %-23s %d %8X %8X %8X %8X %8d' % (self.pps.index(p), p['Name'], p['Type'], p['Prev'],
-                                                                     p['Next'], p['Dir'], p['Start'], p['Size'])
-            """
-
-            print(
+            lines = [
                 "    %-2s %-32s %4s %-4s %-4s %-4s %8s %8s"
                 % ("No", "Name", "Type", "Prev", "Next", " Dir", "SB", "Size")
-            )
-            print("    " + ("-" * 74))
+            ]
+            lines.append("    " + ("-" * 74))
 
             for p in self.pps:
                 if p["Valid"] is False:  # If not valid tree, next
@@ -435,8 +411,8 @@ class OleFile:
                 t += "   - " if p["Dir"] == 0xFFFFFFFF else "%4d " % p["Dir"]
                 t += "       - " if p["Start"] == 0xFFFFFFFF else "%8X " % p["Start"]
 
-                # tname = p["Name"].encode(sys.stdout.encoding, "replace")
-                print("    " + "%2d %-35s %d %22s %8d" % (self.pps.index(p), p["Name"], p["Type"], t, p["Size"]))
+                lines.append("    " + "%2d %-35s %d %22s %8d" % (self.pps.index(p), p["Name"], p["Type"], t, p["Size"]))
+            self.logger.info("\n".join(lines))
 
         # Get PPS full path
         self.__deep = 0
@@ -448,9 +424,8 @@ class OleFile:
         # Get small block link
         self.small_block = get_block_link(self.pps[0]["Start"], self.bbd_fat)
         if self.verbose:
-            print()
             kavutil.vprint("Small Blocks")
-            print(self.small_block)
+            self.logger.info("%s", self.small_block)
 
         return True
 
@@ -570,32 +545,32 @@ class OleFile:
 
                 # print self.parent.verbose
 
-            # Return consecutive numbers
-            # TODO : Optimize it
             def get_liner_value(self, num_list):
-                start = None
-                end = None
+                """Return start and end of the first consecutive sequence.
 
-                if not start:
-                    start = num_list.pop(0)
+                Optimized version: O(n) time complexity instead of O(n²).
+                Modifies num_list in-place, removing the consecutive elements found.
 
-                e = start
-                loop = False
+                Args:
+                    num_list: List of numbers to process (modified in-place)
 
-                for x in num_list:
-                    if e + 1 == x:
-                        e = x
-                        loop = True
-                        continue
-                    else:
-                        while loop and e != num_list.pop(0):
-                            pass
-                        end = e
-                        break
-                else:
-                    for _ in range(len(num_list)):
-                        num_list.pop(0)
-                    end = e
+                Returns:
+                    Tuple of (start, end) of the consecutive sequence
+                """
+                if not num_list:
+                    return None, None
+
+                start = num_list[0]
+                end = start
+
+                # Find the end of consecutive sequence
+                idx = 1
+                while idx < len(num_list) and num_list[idx] == end + 1:
+                    end = num_list[idx]
+                    idx += 1
+
+                # Remove processed elements efficiently
+                del num_list[:idx]
 
                 return start, end
 
@@ -631,7 +606,6 @@ class OleFile:
                     data = b"".join(chunks)
 
                 if self.parent.verbose:
-                    print()
                     kavutil.vprint(pps["Name"])
                     kavutil.HexDump().Buffer(data, 0, 80)
 
@@ -1005,10 +979,34 @@ class OleWriteStream:
     # Write data to small block following small block link (internal)
     # ---------------------------------------------------------------------
     def __write_data_to_small_bolck(self, t_data, t_link):
+        """
+        Write blocks into small-block area efficiently.
+        Avoid repeated full-copy by doing in-place slice assignment when possible.
+        """
+        ssz = self.ssize
+        bsz = self.bsize
+        div_n = bsz // ssz
+        mv_src = memoryview(t_data)
+
+        # Fast path: try in-place write (bytearray or mmap supports slice assignment)
+        try:
+            for i, n in enumerate(t_link):
+                off = (self.small_block[n // div_n] + 1) * bsz
+                off += (n % div_n) * ssz
+                self.mm[off : off + ssz] = mv_src[i * ssz : (i + 1) * ssz]
+            return
+        except TypeError:
+            # self.mm is immutable (e.g., bytes); fall back to single-copy strategy
+            pass
+
+        # Fallback: make one mutable copy, write all blocks once, then finalize
+        buf = bytearray(self.mm)
         for i, n in enumerate(t_link):
-            off = (self.small_block[n // 8] + 1) * self.bsize
-            off += (n % 8) * self.ssize
-            self.mm = self.mm[:off] + t_data[i * self.ssize : (i + 1) * self.ssize] + self.mm[off + self.ssize :]
+            off = (self.small_block[n // div_n] + 1) * bsz
+            off += (n % div_n) * ssz
+            buf[off : off + ssz] = mv_src[i * ssz : (i + 1) * ssz]
+
+        self.mm = bytes(buf)
 
     # ---------------------------------------------------------------------
     # Overwrite 1 Big Block at a specific position in OLE area (internal)
@@ -1071,7 +1069,6 @@ class OleWriteStream:
         self.__set_bblock(n, buf)
 
         if self.verbose:
-            print()
             buf = get_bblock(self.mm, n, self.bsize)
             kavutil.HexDump().Buffer(buf, 0, 0x200)
 
@@ -1095,10 +1092,8 @@ class OleWriteStream:
             for i in t[1:]:
                 t_link[i] = 0xFFFFFFFF
 
-            # Convert SBD array to SBD buffer
-            self.sbd = ""
-            for i in t_link:
-                self.sbd += struct.pack("<L", i)
+            # Convert SBD array to SBD buffer (optimized with join)
+            self.sbd = b"".join(struct.pack("<L", i) for i in t_link)
 
             # Apply SBD to self.mm
             sbd_startblock = kavutil.get_uint32(self.mm, 0x3C)
@@ -1133,10 +1128,8 @@ class OleWriteStream:
             for i in t[1:]:
                 t_link[i] = 0xFFFFFFFF
 
-            # Convert BBD array to BBD buffer
-            self.bbd = b""
-            for i in t_link:
-                self.bbd += struct.pack("<L", i)
+            # Convert BBD array to BBD buffer (optimized with join)
+            self.bbd = b"".join(struct.pack("<L", i) for i in t_link)
 
             # Apply BBD to self.mm
             t, num_of_bbd_blocks, num_of_xbbd_blocks, xbbd_start_block = get_bbd_list_array(self.mm, self.verbose)
@@ -1670,9 +1663,9 @@ class KavMain(ArchivePluginBase):
                 self._analyze_ole_format_details(ret, mm, filename)
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return ret
 
@@ -1704,7 +1697,7 @@ class KavMain(ArchivePluginBase):
             ret["ff_attach"] = fileformat
 
         # Check if it's HWP
-        o = OleFile(filename, verbose=self.verbose)
+        o = OleFile(filename, verbose=self.verbose, logger=self.logger)
         with contextlib.suppress(Error):
             pics = o.openstream("FileHeader")
             d = pics.read()
@@ -1719,27 +1712,8 @@ class KavMain(ArchivePluginBase):
         o.close()
 
     def __get_handle(self, filename):
-        """Get or create handle for OLE file.
-
-        Args:
-            filename: Path to OLE file
-
-        Returns:
-            OleFile object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = OleFile(filename, verbose=self.verbose)
-            self.handle[filename] = zfile
-            return zfile
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open OLE file %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error opening OLE file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for OLE file."""
+        return self._get_or_create_handle(filename, OleFile, verbose=self.verbose, logger=self.logger)
 
     def arclist(self, filename, fileformat, password=None):
         """List files in the archive.
@@ -1767,9 +1741,9 @@ class KavMain(ArchivePluginBase):
                     file_scan_list.append(["arc_ole", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -1786,7 +1760,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_ole":
@@ -1801,25 +1775,11 @@ class KavMain(ArchivePluginBase):
             return fp.read()
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create an OLE archive.
@@ -1854,8 +1814,8 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False

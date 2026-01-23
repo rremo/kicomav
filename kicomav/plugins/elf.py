@@ -9,28 +9,28 @@ This plugin handles ELF (Executable and Linkable Format) for scanning and analys
 """
 
 import contextlib
-import logging
 import os
 import struct
 
 from kicomav.plugins import kavutil
-from kicomav.kavcore.plugin_base import FileFormatPluginBase
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
-# Module logger
-logger = logging.getLogger(__name__)
+# PyInstaller section name
+PYINST_SECTION = "pydata"
 
 
 # -------------------------------------------------------------------------
 # ELF32 class
 # -------------------------------------------------------------------------
 class ELF32:
-    def __init__(self, mm, endian, verbose, filename):
+    def __init__(self, mm, endian, verbose, filename, logger=None):
         self.verbose = verbose
         self.filename = filename
         self.mm = mm
         self.endian = endian
         self.program_headers = []
         self.sections = []
+        self.logger = kavutil.get_logger(logger)
         self.ident = {
             0x00: "System V",
             0x01: "HP-UX",
@@ -120,12 +120,11 @@ class ELF32:
             fileformat["EntryPoint_in_Section"] = sec_idx  # EP is included in the section
 
             if self.verbose:
-                print("-" * 79)
+                self.logger.info("-" * 79)
                 kavutil.vprint("Engine")
                 kavutil.vprint(None, "Engine", "elf")
                 kavutil.vprint(None, "File name", os.path.split(self.filename)[-1])
 
-                print()
                 kavutil.vprint("ELF32")
 
                 msg1 = self.ident[e_ident] if e_ident in self.ident else "Unknown"
@@ -140,38 +139,28 @@ class ELF32:
                 kavutil.vprint(None, "Section Header Num", f"0x{e_shnum:04X}")
 
                 if e_phnum:
-                    print()
                     kavutil.vprint("Program Header")
-                    print("    %-8s %-8s %-8s %-8s %-8s" % ("Type", "Flag", "RVA", "Offset", "Size"))
-                    print("    " + ("-" * 44))
-
+                    lines = ["    %-8s %-8s %-8s %-8s %-8s" % ("Type", "Flag", "RVA", "Offset", "Size")]
+                    lines.append("    " + ("-" * 44))
                     for p in self.program_headers:
-                        print("    %08X %08X %08X %08X %08X" % (p["Type"], p["Flag"], p["RVA"], p["Offset"], p["Size"]))
+                        lines.append(
+                            "    %08X %08X %08X %08X %08X" % (p["Type"], p["Flag"], p["RVA"], p["Offset"], p["Size"])
+                        )
+                    self.logger.info("\n".join(lines))
 
                 if e_shnum:
-                    print()
                     kavutil.vprint("Section Header")
-                    print("    %-15s %-8s %-8s %-8s %-8s %-8s" % ("Name", "Type", "Flag", "RVA", "Offset", "Size"))
-                    print("    " + ("-" * (44 + 16)))
-
+                    lines = ["    %-15s %-8s %-8s %-8s %-8s %-8s" % ("Name", "Type", "Flag", "RVA", "Offset", "Size")]
+                    lines.append("    " + ("-" * (44 + 16)))
                     for p in self.sections:
-                        print(
+                        lines.append(
                             "    %-15s %08X %08X %08X %08X %08X"
-                            % (
-                                p["Name"],
-                                p["Type"],
-                                p["Flag"],
-                                p["RVA"],
-                                p["Offset"],
-                                p["Size"],
-                            )
+                            % (p["Name"], p["Type"], p["Flag"], p["RVA"], p["Offset"], p["Size"])
                         )
+                    self.logger.info("\n".join(lines))
 
-                print()
                 kavutil.vprint("Entry Point (Raw)")
-                print()
                 kavutil.HexDump().Buffer(mm[:], ep_raw, 0x80)
-                print()
 
         return fileformat
 
@@ -199,13 +188,14 @@ class ELF32:
 # ELF64 class
 # -------------------------------------------------------------------------
 class ELF64:
-    def __init__(self, mm, endian, verbose, filename):
+    def __init__(self, mm, endian, verbose, filename, logger=None):
         self.filename = filename
         self.verbose = verbose
         self.mm = mm
         self.endian = endian
         self.program_headers = []
         self.sections = []
+        self.logger = kavutil.get_logger(logger)
 
     def parse(self):
         fileformat = {}
@@ -261,12 +251,11 @@ class ELF64:
             fileformat["EntryPoint_in_Section"] = sec_idx  # EP is included in the section
 
             if self.verbose:
-                print("-" * 79)
+                self.logger.info("-" * 79)
                 kavutil.vprint("Engine")
                 kavutil.vprint(None, "Engine", "elf")
                 kavutil.vprint(None, "File name", os.path.split(self.filename)[-1])
 
-                print()
                 kavutil.vprint("ELF64")
 
                 kavutil.vprint(None, "Entry Point", "0x%016X" % e_entry)
@@ -277,29 +266,21 @@ class ELF64:
                 kavutil.vprint(None, "Section Header Num", "0x%04X" % e_shnum)
 
                 if e_shnum:
-                    print()
                     kavutil.vprint("Section Header")
-                    print("    %-15s %-8s %-16s %-16s %-16s %-16s" % ("Name", "Type", "Flag", "RVA", "Offset", "Size"))
-                    print("    " + ("-" * (76 + 16)))
-
+                    lines = [
+                        "    %-15s %-8s %-16s %-16s %-16s %-16s" % ("Name", "Type", "Flag", "RVA", "Offset", "Size")
+                    ]
+                    lines.append("    " + ("-" * (76 + 16)))
                     for p in self.sections:
-                        print(
+                        lines.append(
                             "    %-15s %08X %016X %016X %016X %016X"
-                            % (
-                                p["Name"],
-                                p["Type"],
-                                p["Flag"],
-                                p["RVA"],
-                                p["Offset"],
-                                p["Size"],
-                            )
+                            % (p["Name"], p["Type"], p["Flag"], p["RVA"], p["Offset"], p["Size"])
                         )
+                    self.logger.info("\n".join(lines))
 
-                print()
                 kavutil.vprint("Entry Point (Raw)")
-                print()
                 kavutil.HexDump().Buffer(mm[:], ep_raw, 0x80)
-                print()
+
         return fileformat
 
     def rva_to_off(self, t_rva):
@@ -319,11 +300,12 @@ class ELF64:
 # ELF unified class
 # -------------------------------------------------------------------------
 class ELF:
-    def __init__(self, mm, verbose, filename):
+    def __init__(self, mm, verbose, filename, logger=None):
         self.filename = filename
         self.verbose = verbose
         self.mm = mm
         self.endian = None
+        self.logger = kavutil.get_logger(logger)
 
     def parse(self):
         fileformat = None
@@ -349,9 +331,9 @@ class ELF:
             raise ValueError
 
         if bit == 1:  # 32bit ELF
-            e = ELF32(mm, self.endian, self.verbose, self.filename)
+            e = ELF32(mm, self.endian, self.verbose, self.filename, logger=self.logger)
         elif bit == 2:  # 64bit ELF
-            e = ELF64(mm, self.endian, self.verbose, self.filename)
+            e = ELF64(mm, self.endian, self.verbose, self.filename, logger=self.logger)
         else:
             raise ValueError
 
@@ -361,20 +343,21 @@ class ELF:
 # -------------------------------------------------------------------------
 # KavMain class
 # -------------------------------------------------------------------------
-class KavMain(FileFormatPluginBase):
+class KavMain(ArchivePluginBase):
     """ELF file format handler plugin.
 
     This plugin provides functionality for:
     - Detecting ELF (Executable and Linkable Format) files
     - Parsing ELF32 and ELF64 headers
     - Extracting section and program header information
+    - Extracting embedded PyInstaller CArchive
     """
 
     def __init__(self):
         """Initialize the ELF plugin."""
         super().__init__(
             author="Kei Choi",
-            version="1.0",
+            version="1.1",
             title="ELF Engine",
             kmd_name="elf",
         )
@@ -393,14 +376,88 @@ class KavMain(FileFormatPluginBase):
         ret = {}
 
         try:
-            elf = ELF(filehandle, self.verbose, filename)
+            elf = ELF(filehandle, self.verbose, filename, logger=self.logger)
             fileformat = elf.parse()
             if fileformat:
                 ret["ff_elf"] = {"elf": fileformat}
 
+                # Detect PyInstaller CArchive by pydata section
+                sections = fileformat.get("Sections", [])
+                for section in sections:
+                    if section.get("Name") == PYINST_SECTION:
+                        offset = section.get("Offset", 0)
+                        size = section.get("Size", 0)
+                        if offset > 0 and size > 0:
+                            ret["ff_elf"]["CArchive"] = {
+                                "Offset": offset,
+                                "Size": size,
+                            }
+                        break
+
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return ret
+
+    def arclist(self, filename, fileformat, password=None):
+        """List embedded archives in ELF file.
+
+        Args:
+            filename: Path to ELF file
+            fileformat: Format info from format() method
+            password: Optional password (not used)
+
+        Returns:
+            List of [engine_id, filename] pairs
+        """
+        file_scan_list = []
+
+        try:
+            if "ff_elf" in fileformat and "CArchive" in fileformat["ff_elf"]:
+                carch = fileformat["ff_elf"]["CArchive"]
+                off = carch["Offset"]
+                size = carch["Size"]
+                file_scan_list.append([f"arc_elf_carch:{off}:{size}", "CArchive"])
+
+        except (KeyError, TypeError) as e:
+            self.logger.debug("Archive list error for %s: %s", filename, e)
+        except Exception as e:
+            self.logger.warning("Unexpected error listing archives in %s: %s", filename, e)
+
+        return file_scan_list
+
+    def unarc(self, arc_engine_id, arc_name, fname_in_arc):
+        """Extract embedded archive from ELF file.
+
+        Args:
+            arc_engine_id: Engine ID (format: 'arc_elf_carch:offset:size')
+            arc_name: Path to ELF file
+            fname_in_arc: Name of archive to extract
+
+        Returns:
+            Extracted archive data, or None on error
+        """
+        if not arc_engine_id.startswith("arc_elf_carch:"):
+            return None
+
+        try:
+            t = arc_engine_id.split(":")
+            off = int(t[1])
+            size = int(t[2])
+
+            with open(arc_name, "rb") as fp:
+                fp.seek(off)
+                data = fp.read(size)
+
+            return data
+
+        except (IOError, OSError) as e:
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+        except (ValueError, IndexError) as e:
+            self.logger.debug("Archive extract parse error: %s", e)
+        except Exception as e:
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+
+        return None

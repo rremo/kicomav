@@ -11,14 +11,10 @@ import contextlib
 import os
 import re
 import tarfile
-import logging
 
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 
 # -------------------------------------------------------------------------
@@ -33,6 +29,11 @@ class KavMain(ArchivePluginBase):
     - Extracting files from archives
     - Creating/updating archives
     """
+
+    # Set engine type to ARCHIVE_ENGINE
+    engine_type = kernel.ARCHIVE_ENGINE
+    # Enable archive creation (kernel.MASTER_PACK = 1)
+    make_arc_type = 1
 
     def __init__(self):
         """Initialize the TAR plugin."""
@@ -53,32 +54,9 @@ class KavMain(ArchivePluginBase):
         self.p_tar_magic = re.compile(rb"[\d\x20\x00]+")
         return 0
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        info["make_arc_type"] = kernel.MASTER_PACK
-        return info
-
     def __get_handle(self, filename):
-        """Get or create handle for TAR file.
-
-        Args:
-            filename: Path to TAR file
-
-        Returns:
-            TarFile object
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-        else:
-            tfile = tarfile.open(filename)
-            self.handle[filename] = tfile
-            return tfile
+        """Get or create handle for TAR file."""
+        return self._get_or_create_handle(filename, tarfile.open)
 
     def format(self, filehandle, filename, filename_ex):
         """Analyze and detect TAR format.
@@ -94,7 +72,7 @@ class KavMain(ArchivePluginBase):
         try:
             mm = filehandle
             if p := self.p_tar_magic.match(mm[100:157]):
-                if len(p.group()) == 57:
+                if len(p.group()) >= 56:
                     ret = {}
 
                     with contextlib.suppress(tarfile.ReadError):
@@ -106,9 +84,9 @@ class KavMain(ArchivePluginBase):
                         return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -128,6 +106,8 @@ class KavMain(ArchivePluginBase):
             if "ff_tar" in fileformat:
                 with contextlib.suppress(tarfile.ReadError):
                     tfile = self.__get_handle(filename)
+                    if tfile is None:
+                        return file_scan_list
 
                     for name in tfile.getnames():
                         # CWE-22: Path traversal prevention
@@ -135,9 +115,9 @@ class KavMain(ArchivePluginBase):
                             file_scan_list.append(["arc_tar", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -154,7 +134,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         try:
@@ -166,9 +146,9 @@ class KavMain(ArchivePluginBase):
                         return f.read()
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
 
@@ -198,8 +178,8 @@ class KavMain(ArchivePluginBase):
                 return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False

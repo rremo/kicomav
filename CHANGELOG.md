@@ -1,3 +1,40 @@
+# v0.41 (Jan 23, 2026)
+
+* **Engine :**
+  * Added dual-cache system for improved scan consistency
+    * `scan_cache` for regular file scanning
+    * `archive_cache` for archive-specific caching with `opt_arc` separation
+  * Added k2security module for security validation
+  * Fixed resource cleanup in k2engine
+
+* **Plugins Modules :**
+  * apk: Added APK archive support
+  * onenote: Added Microsoft OneNote file format support
+  * elf: Added ELF-based PyInstaller support
+  * nsis: Fixed resource cleanup and improved error messages for unknown formats
+  * script: Fixed infinite loop when scanning malformed BAT files
+  * pe: Fixed resource cleanup for PE files
+  * tar/zip: Fixed resource cleanup
+
+* **Security :**
+  * Added input validation for archive extraction
+  * Added path traversal protection
+  * Added resource limit controls
+
+* **Daemon Mode (k2d & k2c) :**
+  * k2d: Added daemon server with REST API (port 8311) and clamd-compatible socket protocol (port 3311)
+  * k2d: Added API key authentication support
+  * k2d: Added concurrent scan request handling with worker pool
+  * k2c: Added command-line client for k2d daemon
+  * k2c: Added file/directory scanning via HTTP and socket protocols
+  * k2c: Added stream scanning from stdin
+
+* **Documentation :**
+  * Added Components section introducing k2, k2c, k2d tools
+  * Added Scan Cache section with Cache Architecture and Performance Impact
+  * Added Archive Exploration API documentation with `list_archive`, `extract_archive`, `read_archive` examples
+  * Updated README.md structure for better readability
+
 # v0.40 (Dec 30, 2025)
 
 * **Engine :**
@@ -63,7 +100,7 @@
 * **Engine :**
   * k2engine: Removed dependence on psutil
   * k2engine: Fixed recompression logic after disinfection of malwares in compress file
-  
+
 * **Plugins Modules :**
   * attach: Added disinfection of attached malwares
   * dummy: Fixed file open in dummy engine
@@ -249,14 +286,14 @@
 * **File Formats :**
   * PE
 * **Engine :**
-  * MD5 Scan for PE 
+  * MD5 Scan for PE
 * **Tool :**
   * Display **Signature number & Last update** Information
   * Support Multi scan paths
   * Signature Tool (**sigtool**) ver 0.1
 * **BugFix :**
   * OLE PPS Dump
-  
+
 ## v0.22 (June 16, 2013)
 * **File Formats :**
   * OLE

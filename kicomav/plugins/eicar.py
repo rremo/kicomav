@@ -9,14 +9,10 @@ used to verify antivirus software functionality.
 """
 
 import os
-import logging
 from kicomav.plugins import kernel
 from kicomav.plugins import cryptolib
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
 
 
 # -------------------------------------------------------------------------
@@ -60,7 +56,7 @@ class KavMain(MalwareDetectorBase):
         self.virus_names = [VNAME_EICAR]
 
         if self.verbose:
-            logger.info("EICAR plugin: Loaded %d signature(s)", len(self.virus_names))
+            self.logger.info("EICAR plugin: Loaded %d signature(s)", len(self.virus_names))
 
         return 0
 
@@ -77,14 +73,19 @@ class KavMain(MalwareDetectorBase):
             Tuple of (threat_found, threat_name, malware_id, scan_state)
         """
         try:
-            # Read file data
-            if hasattr(filehandle, "read"):
-                filehandle.seek(0)
-                buf = filehandle.read(EICAR_SIZE)
-            elif isinstance(filehandle, bytes):
-                buf = filehandle[:EICAR_SIZE]
+            # Read file data using slicing (preferred for mmap/bytes)
+            # or seek+read for file-like objects (BytesIO, etc.)
+            if filehandle is not None:
+                try:
+                    # Try slicing first (works for mmap, bytes, bytearray)
+                    buf = filehandle[:EICAR_SIZE]
+                except TypeError:
+                    # Fall back to seek+read for file-like objects
+                    if hasattr(filehandle, "seek"):
+                        filehandle.seek(0)
+                    buf = filehandle.read(EICAR_SIZE)
             else:
-                # Try to open the file directly
+                # Fallback: open file directly if no filehandle provided
                 with open(filename, "rb") as fp:
                     buf = fp.read(EICAR_SIZE)
 
@@ -95,9 +96,9 @@ class KavMain(MalwareDetectorBase):
                     return True, VNAME_EICAR, kernel.DISINFECT_DELETE, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", kernel.DISINFECT_NONE, kernel.NOT_FOUND
 
@@ -124,9 +125,9 @@ class KavMain(MalwareDetectorBase):
             filename_dir = os.path.dirname(filename) or os.getcwd()
             return k2security.safe_remove_file(filename, filename_dir)
         except (IOError, OSError) as e:
-            logger.debug("Disinfect IO error for %s: %s", filename, e)
+            self.logger.debug("Disinfect IO error for %s: %s", filename, e)
         except k2security.SecurityError as e:
-            logger.warning("Disinfect security error for %s: %s", filename, e)
+            self.logger.warning("Disinfect security error for %s: %s", filename, e)
 
         return False
 

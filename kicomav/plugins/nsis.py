@@ -9,7 +9,6 @@ This plugin handles NSIS (Nullsoft Scriptable Install System) format for scannin
 
 import contextlib
 import datetime
-import logging
 import mmap
 import os
 import struct
@@ -25,15 +24,10 @@ try:
 except ImportError:
     HAS_PYLZMA = False
 
-from kicomav.plugins import cryptolib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
-
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # ----------------------------------------------------------------------------
 # Structure for NSIS
@@ -134,7 +128,7 @@ class NSIS:
     TYPE_ZLIB = 2
     TYPE_COPY = 3
 
-    def __init__(self, filename, offset=0, verbose=False):
+    def __init__(self, filename, offset=0, verbose=False, logger=None):
         self.verbose = verbose
         self.filename = filename
         self.fp = None
@@ -146,6 +140,7 @@ class NSIS:
 
         self.temp_name = None
         self.start_offset = offset
+        self.logger = kavutil.get_logger(logger)
 
     def parse(self):
         # Use mkstemp instead of mktemp to prevent race condition (CWE-377)
@@ -172,6 +167,9 @@ class NSIS:
         comp_size = kavutil.get_uint32(self.mm, 0x18)
 
         data, case_type = self.get_data()  # Get all NSIS data
+        if data is None:
+            return False
+
         self.body_data = data
         self.case_type = case_type
 
@@ -194,38 +192,30 @@ class NSIS:
             - Uncompressed data preview
             - File extraction information
         """
-        print("-" * 79)
+        self.logger.info("-" * 79)
         kavutil.vprint("Engine")
         kavutil.vprint(None, "Engine", "nsis")
         kavutil.vprint(None, "File name", os.path.split(self.filename)[-1])
 
-        print()
         kavutil.vprint("NSIS")
         kavutil.vprint(None, "Flag", f"{flag}")
         kavutil.vprint(None, "Uncompress Case", f"{case_type}")
 
-        self.print_section_header("Uncompress Data")
+        kavutil.vprint("Uncompress Data")
         kavutil.HexDump().Buffer(data, 0, 0x80)
 
         s = self.nsis_header.namelist_ex()
         if len(s):
-            self.print_section_header("File Extract")
+            kavutil.vprint("File Extract")
+            lines = []
             for t in s:
                 (foff, fname, ftime, extract_type) = t
-                print("%08X | %-45s | %s" % (foff, fname, ftime if ftime != "" else "N/A"))
-
-    def print_section_header(self, section_name):
-        """
-        Prints a formatted section header with empty lines
-
-        Args:
-            section_name: Name of the section to display
-        """
-        print()
-        kavutil.vprint(section_name)
-        print()
+                lines.append("%08X | %-45s | %s" % (foff, fname, ftime if ftime != "" else "N/A"))
+            self.logger.info("\n".join(lines))
 
     def namelist(self):
+        if self.nsis_header is None:
+            return []
         return self.nsis_header.namelist()
 
     def read(self, filename):
@@ -234,13 +224,27 @@ class NSIS:
         data = None
         (foff, ftime, extract_type) = self.nsis_header.files[filename]
 
+        # Bounds checking: validate offset before reading
+        body_len = len(self.body_data)
+        if foff < 0 or foff + 4 > body_len:
+            return None  # Invalid offset
+
         if self.case_type == 1:  # case 1: Compressing the entire installation file
             fsize = kavutil.get_uint32(self.body_data, foff) & 0x7FFFFFFF
+            # Validate file size bounds
+            if foff + 4 + fsize > body_len:
+                return None
             return self.body_data[foff + 4 : foff + 4 + fsize]
 
         elif self.case_type == 2:  # case 2: Compressing individually
             fsize = kavutil.get_uint32(self.body_data, foff) & 0x7FFFFFFF
+            # Validate file size bounds
+            if foff + 4 + fsize > body_len:
+                return None
             fdata = self.body_data[foff + 4 : foff + 4 + fsize]
+            # Validate fdata has enough bytes for compression type check
+            if len(fdata) < 4:
+                return None
             comp_type = self.check_compression_type(kavutil.get_uint32(fdata, 0))
 
             if comp_type == self.TYPE_LZMA:
@@ -497,7 +501,12 @@ class NSISHeader:
                     dt = datetime.datetime.fromtimestamp((ft_dec - 116444736000000000) // 10000000)
 
                 file_name = self.__get_string(nr.parm1).replace(b"\\", b"/")
-                self.files[file_name.decode("utf-8")] = nr.parm2, dt, nr.which
+                # Use utf-8 with fallback to latin-1 for non-UTF-8 encoded filenames
+                try:
+                    decoded_name = file_name.decode("utf-8")
+                except UnicodeDecodeError:
+                    decoded_name = file_name.decode("latin-1")
+                self.files[decoded_name] = nr.parm2, dt, nr.which
 
             elif val == b"\x3e\x00\x00\x00":
                 nr = StructNsisRecord()
@@ -509,7 +518,12 @@ class NSISHeader:
                 # print hex(nr.parm4)
                 # print hex(nr.parm5)
 
-                self.files[file_name.decode("utf-8")] = nr.parm1, "", nr.which
+                # Use utf-8 with fallback to latin-1 for non-UTF-8 encoded filenames
+                try:
+                    decoded_name = file_name.decode("utf-8")
+                except UnicodeDecodeError:
+                    decoded_name = file_name.decode("latin-1")
+                self.files[decoded_name] = nr.parm1, "", nr.which
 
             off += 28
 
@@ -586,15 +600,16 @@ class KavMain(ArchivePluginBase):
             return self.handle.get(filename, None)
 
         try:
-            zfile = NSIS(filename, offset, self.verbose)
+            zfile = NSIS(filename, offset, self.verbose, logger=self.logger)
             if zfile.parse():
                 self.handle[filename] = zfile
                 return zfile
 
         except (IOError, OSError) as e:
-            logger.debug("Failed to open NSIS file %s: %s", filename, e)
+            self.logger.debug("Failed to open NSIS file %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error opening NSIS file %s: %s", filename, e)
+            # Decompression errors (lzma/zlib) are common in malformed files, log as debug
+            self.logger.debug("Failed to open NSIS file %s: %s", filename, e)
 
         return None
 
@@ -625,9 +640,9 @@ class KavMain(ArchivePluginBase):
                     file_scan_list.append(["arc_nsis", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -644,7 +659,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_nsis":
@@ -658,9 +673,9 @@ class KavMain(ArchivePluginBase):
             return zfile.read(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
 
@@ -685,22 +700,8 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

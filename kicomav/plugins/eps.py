@@ -8,17 +8,13 @@ This plugin handles EPS (Encapsulated PostScript) format for malware detection.
 """
 
 import contextlib
-import logging
 import os
 import re
 
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import FileFormatPluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import FileFormatPluginBase
 
 
 # -------------------------------------------------------------------------
@@ -97,9 +93,9 @@ class KavMain(FileFormatPluginBase):
                     return {"ff_eps": list(set(t))}
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -122,11 +118,10 @@ class KavMain(FileFormatPluginBase):
             mm = filehandle
 
             if self.verbose:
-                print("-" * 79)
+                self.logger.info("-" * 79)
                 kavutil.vprint("Engine")
                 kavutil.vprint(None, "Engine", "eps")
                 kavutil.vprint(None, "File name", os.path.split(filename)[-1])
-                print()
 
             eps_keywords = fileformat["ff_eps"]
 
@@ -134,7 +129,6 @@ class KavMain(FileFormatPluginBase):
                 kavutil.vprint("EPS Keyword")
                 for i, name in enumerate(eps_keywords):
                     kavutil.vprint(None, "Keyword #%d" % (i + 1), name)
-                print()
 
             if self.p_hex1:
                 t_hex = self.p_hex1.findall(mm)
@@ -145,9 +139,9 @@ class KavMain(FileFormatPluginBase):
                         return True, "Trojan.EPS.Generic", 0, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -168,8 +162,8 @@ class KavMain(FileFormatPluginBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False

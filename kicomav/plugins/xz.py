@@ -8,19 +8,16 @@ This plugin handles XZ/LZMA archive format for scanning and manipulation.
 """
 
 import lzma
-import logging
+from typing import Optional
 
 from kicomav.plugins import kernel
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import SingleStreamArchiveBase
 
 
 # -------------------------------------------------------------------------
 # class KavMain
 # -------------------------------------------------------------------------
-class KavMain(ArchivePluginBase):
+class KavMain(SingleStreamArchiveBase):
     """XZ archive handler plugin.
 
     This plugin provides functionality for:
@@ -30,116 +27,45 @@ class KavMain(ArchivePluginBase):
     - Creating/updating archives
     """
 
+    # Set engine type to ARCHIVE_ENGINE
+    engine_type = kernel.ARCHIVE_ENGINE
+    # SingleStreamArchiveBase configuration
+    format_key = "ff_xz"
+    engine_id = "arc_xz"
+    signature = b"\xFD7zXZ\x00"  # XZ magic number
+    signature_offset = 0
+
     def __init__(self):
         """Initialize the XZ plugin."""
         super().__init__(
             author="Kei Choi",
-            version="1.1",
+            version="1.2",
             title="XZ Archive Engine",
             kmd_name="xz",
         )
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        info["make_arc_type"] = kernel.MASTER_PACK
-        return info
-
-    def format(self, filehandle, filename, filename_ex):
-        """Analyze and detect XZ format.
-
-        Args:
-            filehandle: File data (memory mapped)
-            filename: Path to archive file
-            filename_ex: Extended filename info
-
-        Returns:
-            Dictionary with format info, or None if not recognized
-        """
-        try:
-            mm = filehandle
-            if mm[:6] == b"\xFD7zXZ\x00":
-                return {"ff_xz": "xz"}
-        except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
-
-        return None
-
-    def arclist(self, filename, fileformat, password=None):
-        """List files in the archive.
+    def _open_stream(self, filename: str, mode: str):
+        """Open XZ/LZMA stream.
 
         Args:
             filename: Path to archive file
-            fileformat: Format info from format() method
+            mode: Open mode ("rb" for read, "wb" for write)
 
         Returns:
-            List of [engine_id, filename] pairs
+            lzma file object (context manager)
         """
-        file_scan_list = []
+        return lzma.open(filename, mode)
 
-        if "ff_xz" in fileformat:
-            file_scan_list.append(["arc_xz", "XZ"])
-
-        return file_scan_list
-
-    def unarc(self, arc_engine_id, arc_name, fname_in_arc):
-        """Extract a file from the archive.
+    def _detect_format(self, filehandle: bytes, filename: str) -> Optional[str]:
+        """Detect XZ format by checking signature.
 
         Args:
-            arc_engine_id: Engine ID ('arc_xz')
-            arc_name: Path to archive file
-            fname_in_arc: Name of file to extract
+            filehandle: File data
+            filename: Original filename (not used)
 
         Returns:
-            Extracted file data, or None on error
+            "XZ" if valid XZ format, None otherwise
         """
-        try:
-            if arc_engine_id == "arc_xz":
-                with lzma.open(arc_name, "rb") as in_file:
-                    return in_file.read()
-
-        except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
-        except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
-
+        if len(filehandle) >= 6 and filehandle[:6] == self.signature:
+            return "XZ"
         return None
-
-    def mkarc(self, arc_engine_id, arc_name, file_infos):
-        """Create an XZ archive.
-
-        Args:
-            arc_engine_id: Engine ID ('arc_xz')
-            arc_name: Path to archive file
-            file_infos: List of file info structures
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if arc_engine_id != "arc_xz":
-            return False
-
-        try:
-            with lzma.open(arc_name, "wb") as zfile:
-                file_info = file_infos[0]
-                rname = file_info.get_filename()
-
-                with open(rname, "rb") as f:
-                    data = f.read()
-
-                zfile.write(data)
-                return True
-
-        except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
-        except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
-
-        return False

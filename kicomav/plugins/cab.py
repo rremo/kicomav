@@ -8,17 +8,9 @@ This plugin handles CAB archive format for scanning and manipulation.
 """
 
 import contextlib
-import os
-import tempfile
-import shutil
-import logging
 
-from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase, TempPathMixin
 
 try:
     from pycabfile import CabFile
@@ -31,7 +23,7 @@ except ImportError:
 # -------------------------------------------------------------------------
 # class KavMain
 # -------------------------------------------------------------------------
-class KavMain(ArchivePluginBase):
+class KavMain(TempPathMixin, ArchivePluginBase):
     """CAB archive handler plugin.
 
     This plugin provides functionality for:
@@ -49,8 +41,6 @@ class KavMain(ArchivePluginBase):
             title="CAB Archive Engine",
             kmd_name="cab",
         )
-        self.temp_path = {}
-        self.root_temp_path = None
 
     def _custom_init(self) -> int:
         """Custom initialization for CAB plugin.
@@ -60,11 +50,10 @@ class KavMain(ArchivePluginBase):
         """
         if not PYCABFILE_AVAILABLE:
             if self.verbose:
-                logger.info("pycabfile package is not available")
+                self.logger.info("pycabfile package is not available")
             return -1
 
-        pid = os.getpid()
-        self.root_temp_path = os.path.join(tempfile.gettempdir(), "ktmp_cab_%05x" % pid)
+        self._init_temp_paths("cab")
         return 0
 
     def _custom_uninit(self) -> int:
@@ -76,44 +65,15 @@ class KavMain(ArchivePluginBase):
         self.arcclose()
         return 0
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        return info
-
     def __get_handle(self, filename):
-        """Get or create handle for CAB file.
-
-        Args:
-            filename: Path to CAB file
-
-        Returns:
-            CabFile object or None
-        """
+        """Get or create handle for CAB file."""
         if filename in self.handle:
             return self.handle[filename]
 
-        try:
-            cab_file = CabFile(filename, "r")
-            self.handle[filename] = cab_file
-
-            if self.root_temp_path and not os.path.exists(self.root_temp_path):
-                os.makedirs(self.root_temp_path, exist_ok=True)
-
-            self.temp_path[filename] = tempfile.mkdtemp(prefix="ktmp", dir=self.root_temp_path)
-            return cab_file
-
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open CAB file %s: %s", filename, e)
-        except Exception as e:
-            logger.debug("Error opening CAB file %s: %s", filename, e)
-
-        return None
+        handle = self._get_or_create_handle(filename, CabFile, "r")
+        if handle:
+            self._create_temp_dir(filename)
+        return handle
 
     def format(self, filehandle, filename, filename_ex):
         """Analyze and detect CAB format.
@@ -141,9 +101,9 @@ class KavMain(ArchivePluginBase):
                 return {"ff_cab": fileformat}
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.debug("Format detection error for %s: %s", filename, e)
+            self.logger.debug("Format detection error for %s: %s", filename, e)
 
         return None
 
@@ -175,9 +135,9 @@ class KavMain(ArchivePluginBase):
                     file_scan_list.append(["arc_cab", filename_in_cab])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.debug("Archive list error for %s: %s", filename, e)
+            self.logger.debug("Archive list error for %s: %s", filename, e)
 
         return file_scan_list
 
@@ -194,7 +154,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_cab":
@@ -210,43 +170,18 @@ class KavMain(ArchivePluginBase):
                 return file_data
 
         except KeyError:
-            logger.debug("File %s not found in CAB archive", fname_in_arc)
+            self.logger.debug("File %s not found in CAB archive", fname_in_arc)
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
 
         return None
 
     def arcclose(self):
         """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                cab_file = self.handle.get(fname)
-                if cab_file:
-                    cab_file.close()
-
-                # Delete temporary directory
-                temp_path = self.temp_path.get(fname)
-                if temp_path and os.path.exists(temp_path):
-                    with contextlib.suppress(OSError):
-                        if os.path.isdir(temp_path):
-                            shutil.rmtree(temp_path)
-                        else:
-                            os.remove(temp_path)
-
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
-                self.temp_path.pop(fname, None)
-
-        # Delete root temporary directory
-        if self.root_temp_path and os.path.exists(self.root_temp_path):
-            with contextlib.suppress(OSError):
-                shutil.rmtree(self.root_temp_path)
+        super().arcclose()
+        self._cleanup_temp_paths()
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create a CAB archive.
@@ -275,8 +210,8 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.debug("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.debug("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.debug("Archive creation error for %s: %s", arc_name, e)
+            self.logger.debug("Archive creation error for %s: %s", arc_name, e)
 
         return False

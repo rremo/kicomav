@@ -8,17 +8,13 @@ This plugin handles DDE (Dynamic Data Exchange) based malware detection.
 """
 
 import contextlib
-import logging
 import os
 import re
 import zipfile
 
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
 
 
 # -------------------------------------------------------------------------
@@ -138,9 +134,9 @@ class KavMain(MalwareDetectorBase):
                     return True, "Exploit.MSWord.DDE.b", 0, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -161,9 +157,9 @@ class KavMain(MalwareDetectorBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False
 

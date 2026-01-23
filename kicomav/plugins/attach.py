@@ -9,14 +9,10 @@ This plugin handles attached data extraction from files.
 
 import contextlib
 import os
-import logging
 
 from kicomav.plugins import kernel
 from kicomav.plugins import kavutil
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 
 # -------------------------------------------------------------------------
@@ -73,7 +69,7 @@ class KavMain(ArchivePluginBase):
 
     def _print_attach_debug_info(self, filename, pos, size):
         """Print debug information about attached data."""
-        print("-" * 79)
+        self.logger.info("-" * 79)
         kavutil.vprint("Engine")
         kavutil.vprint(None, "Engine", "attach")
         kavutil.vprint(None, "File name", os.path.split(filename)[-1])
@@ -84,14 +80,10 @@ class KavMain(ArchivePluginBase):
             with open(filename, "rb") as fp:
                 fp.seek(pos)
                 buf = fp.read(0x80)
-                print()
                 kavutil.vprint("Attach Point (Raw)")
-                print()
                 kavutil.HexDump().Buffer(buf, 0, 0x80)
         except (IOError, OSError) as e:
-            logger.debug("Error reading attach point: %s", e)
-
-        print()
+            self.logger.debug("Error reading attach point: %s", e)
 
     def unarc(self, arc_engine_id, arc_name, fname_in_arc):
         """Extract attached data from the file.
@@ -115,9 +107,9 @@ class KavMain(ArchivePluginBase):
                     return fp.read(size)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
 
@@ -161,8 +153,8 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False

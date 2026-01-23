@@ -9,18 +9,13 @@ This plugin handles HWPX (Hangul Word Processor XML) format for malware detectio
 
 import contextlib
 import json
-import logging
 import os
 import zipfile
 
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
-
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # -------------------------------------------------------------------------
 # XML parser
@@ -462,26 +457,8 @@ class KavMain(ArchivePluginBase):
         return ["Exploit.HWPX.Generic"]
 
     def __get_handle(self, filename):
-        """Get or create handle for HWPX file.
-
-        Args:
-            filename: Path to HWPX file
-
-        Returns:
-            ZipFile object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = zipfile.ZipFile(filename)
-            self.handle[filename] = zfile
-            return zfile
-
-        except (IOError, OSError, zipfile.BadZipFile) as e:
-            logger.debug("Failed to open HWPX file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for HWPX file."""
+        return self._get_or_create_handle(filename, zipfile.ZipFile)
 
     def scan(self, filehandle, filename, fileformat, filename_ex):
         """Scan for malware.
@@ -503,11 +480,10 @@ class KavMain(ArchivePluginBase):
                 return result
 
             if self.verbose:
-                print("-" * 79)
+                self.logger.info("-" * 79)
                 kavutil.vprint("Engine")
                 kavutil.vprint(None, "Engine", "hwpx")
                 kavutil.vprint(None, "File name", os.path.split(filename)[-1])
-                print()
 
             zfile = zipfile.ZipFile(filename)
 
@@ -518,7 +494,6 @@ class KavMain(ArchivePluginBase):
                     if self.verbose:
                         kavutil.vprint("mimetype")
                         kavutil.vprint(None, "body", f"{data}")
-                        print()
 
                     if data != b"application/hwp+zip":
                         result = (True, "Exploit.HWPX.Generic", 0, kernel.INFECTED)
@@ -535,16 +510,15 @@ class KavMain(ArchivePluginBase):
 
                             if self.verbose:
                                 kavutil.vprint(name)
-                                print(json.dumps(dict_data, indent=2))
-                                print()
+                                self.logger.info("%s", json.dumps(dict_data, indent=2))
                     except Exception:
                         result = (True, "Exploit.HWPX.Generic", 0, kernel.INFECTED)
                         return result
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
         finally:
             if zfile:
                 zfile.close()
@@ -569,9 +543,9 @@ class KavMain(ArchivePluginBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False
 
@@ -599,9 +573,9 @@ class KavMain(ArchivePluginBase):
             file_scan_list.extend(["arc_hwpx", name] for name in zfile.namelist() if name.lower().find("bindata") != -1)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -627,22 +601,8 @@ class KavMain(ArchivePluginBase):
             return zfile.read(fname_in_arc)
 
         except (IOError, OSError, zipfile.BadZipFile) as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

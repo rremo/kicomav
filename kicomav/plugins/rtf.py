@@ -8,7 +8,6 @@ This plugin handles RTF format for scanning, malware detection, and extraction.
 """
 
 import contextlib
-import logging
 import os
 import re
 from pathlib import Path
@@ -16,11 +15,7 @@ from pathlib import Path
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
-
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # -------------------------------------------------------------------------
 # Functions related to extracting objdata
@@ -32,9 +27,10 @@ HEX_RE = re.compile(rb"[0-9A-Fa-f]{2}")
 # RtfFile class
 # -------------------------------------------------------------------------
 class RtfFile:
-    def __init__(self, filename, verbose=False):
+    def __init__(self, filename, verbose=False, logger=None):
         self.verbose = verbose  # Debugging mode
         self.filename = filename
+        self.logger = kavutil.get_logger(logger)
 
         self.p = re.compile(rb"[A-Fa-f0-9]+")
 
@@ -115,7 +111,7 @@ class RtfFile:
     def _find_matching_brace(self, data: bytes, start: int) -> int:
         """
         start is the position of '{'. Return the position of the matching '}'.
-        In RTF, \{ \} are ignored (simple processing).
+        In RTF, \\{ \\} are ignored (simple processing).
         """
         depth = 0
         i = start
@@ -161,9 +157,10 @@ class RtfFile:
 # RtfPackage class
 # -------------------------------------------------------------------------
 class RtfPackage:
-    def __init__(self, filename, verbose=False):
+    def __init__(self, filename, verbose=False, logger=None):
         self.verbose = verbose  # Debugging mode
         self.filename = filename
+        self.logger = kavutil.get_logger(logger)
 
         self.objdata = {}  # objdata
         self.payloads = []  # Extracted payloads
@@ -201,8 +198,8 @@ class RtfPackage:
         data_len = kavutil.get_uint32(rtf_bytes, data_len_off)
 
         if self.verbose:
-            print(f"[+] Extracted filename: {fname}")
-            print(f"[+] Extracted path name: {path_name}")
+            self.logger.info("[+] Extracted filename: %s", fname)
+            self.logger.info("[+] Extracted path name: %s", path_name)
 
         return {
             fname: rtf_bytes[data_len_off + 4 : data_len_off + 4 + data_len],
@@ -228,9 +225,10 @@ class RtfPackage:
 # RtfOle2link class
 # -------------------------------------------------------------------------
 class RtfOle2link:
-    def __init__(self, filename, verbose=False):
+    def __init__(self, filename, verbose=False, logger=None):
         self.verbose = verbose  # Debugging mode
         self.filename = filename
+        self.logger = kavutil.get_logger(logger)
 
         self.objdata = {}  # objdata
         self.payloads = []  # Extracted payloads
@@ -363,9 +361,9 @@ class KavMain(ArchivePluginBase):
                 ret["ff_rtf_ole2link"] = "RTF OLE2Link"
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return ret
 
@@ -394,7 +392,7 @@ class KavMain(ArchivePluginBase):
 
                         if val not in [2, 4, 8]:
                             if self.verbose:
-                                print("[*] RTF :", val)
+                                self.logger.info("[*] RTF : %s", val)
                             return True, "Exploit.RTF.CVE-2010-3333.a", 0, kernel.INFECTED
 
                     if self.prog_cve_2010_3333_2 and self.prog_cve_2010_3333_2.search(mm):
@@ -406,12 +404,12 @@ class KavMain(ArchivePluginBase):
                         val = int(t.groups()[0])
 
                         if self.verbose:
-                            print("[*] RTF :", val)
+                            self.logger.info("[*] RTF : %s", val)
 
                         if val >= 25:
                             if t1 := re.findall(r"{\\lfolevel}", mm):
                                 if self.verbose:
-                                    print("[*] N :", len(t1))
+                                    self.logger.info("[*] N : %s", len(t1))
                                 if len(t1) > val:
                                     return True, "Exploit.RTF.CVE-2014-1761", 0, kernel.INFECTED
 
@@ -420,9 +418,9 @@ class KavMain(ArchivePluginBase):
                     return True, "Trojan.PS.Agent", 0, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -443,36 +441,15 @@ class KavMain(ArchivePluginBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False
 
     def __get_handle(self, filename, handler_class):
-        """Get or create handle for RTF file.
-
-        Args:
-            filename: Path to RTF file
-            handler_class: Class to use for parsing
-
-        Returns:
-            Handler object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = handler_class(filename, self.verbose)
-            self.handle[filename] = zfile
-            return zfile
-
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open RTF file %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error opening RTF file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for RTF file."""
+        return self._get_or_create_handle(filename, handler_class, self.verbose, logger=self.logger)
 
     def arclist(self, filename, fileformat, password=None):
         """List files in the archive.
@@ -501,9 +478,9 @@ class KavMain(ArchivePluginBase):
                     file_scan_list.extend(["arc_rtf_ole2link", name] for name in zfile.namelist())
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -532,25 +509,11 @@ class KavMain(ArchivePluginBase):
                 return zfile.read(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create an archive.

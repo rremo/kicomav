@@ -10,16 +10,11 @@ This plugin handles UPX-packed PE executables for scanning.
 import mmap
 import os
 import struct
-import logging
 
 from kicomav.plugins import kernel
 from kicomav.plugins import kavutil
 from kicomav.plugins import pe
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
-
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # -------------------------------------------------------------------------
 # UPX constants and helper data
@@ -520,11 +515,11 @@ class KavMain(ArchivePluginBase):
             file_scan_list.append([arc_name, "UPX"])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except ValueError:
             pass  # Not UPX packed
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
         finally:
             if mm:
                 mm.close()
@@ -535,15 +530,13 @@ class KavMain(ArchivePluginBase):
 
     def _print_upx_debug_info(self, filename, arc_name):
         """Print UPX debug information."""
-        print("-" * 79)
+        self.logger.info("-" * 79)
         kavutil.vprint("Engine")
         kavutil.vprint(None, "Engine", "upx")
         kavutil.vprint(None, "File name", os.path.split(filename)[-1])
 
-        print()
         kavutil.vprint("UPX : only support 'nrv2b' compress method.")
         kavutil.vprint(None, "Compress Method", arc_name.split("!")[-1])
-        print()
 
     def unarc(self, arc_engine_id, arc_name, fname_in_arc):
         """Unpack UPX-compressed file.
@@ -626,7 +619,6 @@ class KavMain(ArchivePluginBase):
                     kavutil.vprint(None, "Decompress Size", "Error")
                 else:
                     kavutil.vprint(None, "Decompress Size", "%d" % len(unpack_data))
-                print()
 
             if unpack_data == "":
                 raise ValueError
@@ -634,12 +626,12 @@ class KavMain(ArchivePluginBase):
             data = unpack_data
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
             data = None
         except ValueError:
             data = None
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
             data = None
         finally:
             if mm:

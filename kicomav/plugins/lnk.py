@@ -8,17 +8,13 @@ This plugin handles LNK (Windows Shortcut) format for malware detection.
 """
 
 import contextlib
-import logging
 import os
 import re
 
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
 
 
 # -------------------------------------------------------------------------
@@ -128,9 +124,9 @@ class KavMain(MalwareDetectorBase):
                     return True, "Trojan.LNK.Agent.gen", kernel.DISINFECT_DELETE, kernel.INFECTED
 
         except (IOError, OSError, ValueError) as e:
-            logger.debug("Scan error for %s: %s", filename, e)
+            self.logger.debug("Scan error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", kernel.DISINFECT_NONE, kernel.NOT_FOUND
 
@@ -151,8 +147,8 @@ class KavMain(MalwareDetectorBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False

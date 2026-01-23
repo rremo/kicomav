@@ -14,9 +14,8 @@ import struct
 import zlib
 
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
-# Module logger
 logger = logging.getLogger(__name__)
 
 # https://github.com/kennethreitz-archive/pyinstaller/blob/master/carchive.py
@@ -48,42 +47,82 @@ class CArchiveFile:
 
             magic, totallen, tocpos, toclen, pyvers, pylib_name = struct.unpack("!8siiii64s", mbuf[:88])
             if magic == MAGIC:
-                if self.verbose:
-                    print(
-                        f"[CArchive] totallen: {totallen}, tocpos: {tocpos}, toclen: {toclen}, pyvers: {pyvers}, pylib_name: {pylib_name}"
-                    )
+                logger.debug(
+                    "CArchive totallen: %d, tocpos: %d, toclen: %d, pyvers: %d, pylib_name: %s",
+                    totallen,
+                    tocpos,
+                    toclen,
+                    pyvers,
+                    pylib_name,
+                )
 
-                pkg_start = 0  # len(mm) - totallen
-                if self.verbose:
-                    print(f"[CArchive] pkg_start: {pkg_start}, len(mm): {len(mm)}, totallen: {totallen}")
+                pkg_start = len(mm) - totallen
+                logger.debug("CArchive pkg_start: %d, len(mm): %d, totallen: %d", pkg_start, len(mm), totallen)
 
                 s = mm[pkg_start + tocpos : pkg_start + tocpos + toclen]
                 p = 0
 
+                # Detect TOC entry format: new (4-byte slen) vs old (2-byte slen)
+                # Try new format first, if slen is unreasonable, use old format
+                use_old_format = False
+                if len(s) >= 18:
+                    test_slen = struct.unpack("!i", s[:4])[0]
+                    # If slen is too large or negative, try old format
+                    if test_slen <= 0 or test_slen > 1000:
+                        use_old_format = True
+                        logger.debug("CArchive using old TOC format (2-byte slen)")
+
                 while p < toclen:
-                    slen, dpos, dlen, ulen, flag, typcd = struct.unpack("!iiiiBB", s[p : p + 18])
-                    if self.verbose:
-                        print(
-                            f"[CArchive] slen: {slen}, dpos: {dpos}, dlen: {dlen}, ulen: {ulen}, flag: {flag}, typcd: {chr(typcd)}"
-                        )
-                    nmlen = slen - 18
-                    p += 18
+                    if use_old_format:
+                        # Old format: 2-byte slen (PyInstaller for Python 2.x)
+                        if p + 16 > toclen:
+                            break
+                        slen, dpos, dlen, ulen, flag, typcd = struct.unpack("!HiiiBB", s[p : p + 16])
+                        header_size = 16
+                    else:
+                        # New format: 4-byte slen (PyInstaller for Python 3.x)
+                        if p + 18 > toclen:
+                            break
+                        slen, dpos, dlen, ulen, flag, typcd = struct.unpack("!iiiiBB", s[p : p + 18])
+                        header_size = 18
+
+                    logger.debug(
+                        "CArchive slen: %d, dpos: %d, dlen: %d, ulen: %d, flag: %d, typcd: %s",
+                        slen,
+                        dpos,
+                        dlen,
+                        ulen,
+                        flag,
+                        chr(typcd),
+                    )
+
+                    if slen <= header_size or slen > 1000:
+                        logger.debug("CArchive invalid slen %d at position %d", slen, p)
+                        break
+
+                    nmlen = slen - header_size
+                    p += header_size
                     (nm,) = struct.unpack("%is" % nmlen, s[p : p + nmlen])
                     p += nmlen
                     nm = nm.rstrip(b"\0")
                     nm = nm.decode("utf-8")
-                    if self.verbose:
-                        print(f"[CArchive] nm: {nm}")
+
+                    # Add .pyc extension for module(m) and script(s) types
+                    typcd_chr = chr(typcd)
+                    if typcd_chr in ("m", "s"):
+                        nm = nm + ".pyc"
+
+                    logger.debug("CArchive nm: %s", nm)
 
                     self.tocs[nm] = {
                         "Data Pos": dpos,
                         "Data Length": dlen,
                         "Flag": flag,
                     }
-        except struct.error:
-            pass
-        except IOError:
-            pass
+        except struct.error as e:
+            logger.debug("CArchive parse struct error for %s: %s", self.filename, e)
+        except IOError as e:
+            logger.debug("CArchive parse IO error for %s: %s", self.filename, e)
 
     def close(self):
         if self.mm:
@@ -98,7 +137,7 @@ class CArchiveFile:
         return self.tocs.keys() if len(self.tocs) else []
 
     def read(self, fname):
-        with contextlib.suppress(KeyError, zlib.error):
+        with contextlib.suppress(KeyError, zlib.error, k2security.DecompressionBombError):
             toc = self.tocs[fname]
             start = toc["Data Pos"]
             size = toc["Data Length"]
@@ -107,7 +146,8 @@ class CArchiveFile:
             data = self.mm[start : start + size]
 
             if flag:
-                data = zlib.decompress(data)
+                # Use safe decompression to prevent bomb attacks
+                data = k2security.safe_zlib_decompress(data)
 
             return data
 
@@ -142,28 +182,8 @@ class KavMain(ArchivePluginBase):
         )
 
     def __get_handle(self, filename):
-        """Get or create handle for CArchive file.
-
-        Args:
-            filename: Path to CArchive file
-
-        Returns:
-            CArchiveFile object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = CArchiveFile(filename, self.verbose)
-            self.handle[filename] = zfile
-            return zfile
-
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open CArchive file %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error opening CArchive file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for CArchive file."""
+        return self._get_or_create_handle(filename, CArchiveFile, self.verbose)
 
     def format(self, filehandle, filename, filename_ex):
         """Analyze and detect CArchive format.
@@ -179,17 +199,17 @@ class KavMain(ArchivePluginBase):
         try:
             mm = filehandle
 
-            # CArchive has Magic at the end of the file
-            # Check CArchive Magic only when the file name contains "Attached"
-            if filename_ex.find("Attached") != -1:
+            # CArchive (PyInstaller) has MEI Magic near the end of the file
+            # Check when extracted from ELF/PE as "CArchive" or "Attached"
+            if filename_ex.find("CArchive") != -1 or filename_ex.find("Attached") != -1:
                 buf = mm[-4096:]
                 if buf.rfind(MAGIC) != -1:
                     return {"ff_carch": "CArchive"}
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -219,9 +239,9 @@ class KavMain(ArchivePluginBase):
                     file_scan_list.append(["arc_carch", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -238,7 +258,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_carch":
@@ -252,22 +272,8 @@ class KavMain(ArchivePluginBase):
             return zfile.read(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

@@ -1,6 +1,15 @@
 ﻿# -*- coding:utf-8 -*-
 # Author: Kei Choi(hanul93@gmail.com)
 
+"""
+KicomAV Engine Module
+
+This module provides the core antivirus scanning engine including:
+- Plugin management and loading
+- File scanning and malware detection
+- Archive handling and nested scanning
+- Parallel scanning support
+"""
 
 import contextlib
 import os
@@ -10,6 +19,7 @@ import datetime
 import types
 import mmap
 import glob
+import logging
 import re
 import shutil
 import struct
@@ -19,6 +29,10 @@ import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from collections import deque
+from typing import Optional, List, Dict, Any, Tuple, Callable, Union
+
+# Module-level logger for k2engine
+logger = logging.getLogger(__name__)
 
 try:
     from . import k2timelib
@@ -36,10 +50,12 @@ except ImportError:
 # Define engine error message
 # ---------------------------------------------------------------------
 class EngineKnownError(Exception):
-    def __init__(self, value):
+    """Exception for known engine errors."""
+
+    def __init__(self, value: str) -> None:
         self.value = value
 
-    def __str__(self):
+    def __str__(self) -> str:
         return repr(self.value)
 
 
@@ -47,26 +63,28 @@ class EngineKnownError(Exception):
 # Engine class
 # -------------------------------------------------------------------------
 class Engine:
+    """Main antivirus engine for managing plugins and scanning."""
+
     # ---------------------------------------------------------------------
     # __init__(self, verbose=False)
     # Initialize the class
     # Argument: verbose - Debug mode
     # ---------------------------------------------------------------------
-    def __init__(self, verbose=False):
-        self.verbose = verbose  # Debug mode
+    def __init__(self, verbose: bool = False) -> None:
+        self.verbose: bool = verbose  # Debug mode
 
-        self.plugins_path = None  # Plugin path
-        self.temp_path = None  # Temporary folder class
-        self.kmdfiles = []  # List of kmd files with priority
-        self.kmd_modules = []  # Loaded modules in memory
+        self.plugins_path: Optional[str] = None  # Plugin path
+        self.temp_path: Optional[k2file.K2Tempfile] = None  # Temporary folder class
+        self.kmdfiles: List[str] = []  # List of kmd files with priority
+        self.kmd_modules: List[types.ModuleType] = []  # Loaded modules in memory
 
         # Worker pool for parallel scanning (cached workers)
-        self.worker_pool = []  # List of EngineInstance
-        self.worker_pool_size = 0  # Current pool size
+        self.worker_pool: List["EngineInstance"] = []  # List of EngineInstance
+        self.worker_pool_size: int = 0  # Current pool size
 
         # The latest time value of the plugin engine
         # Initial value is set to 1980-01-01
-        self.max_datetime = datetime.datetime(1980, 1, 1, 0, 0, 0, 0, tzinfo=datetime.timezone.utc)
+        self.max_datetime: datetime.datetime = datetime.datetime(1980, 1, 1, 0, 0, 0, 0, tzinfo=datetime.timezone.utc)
 
         # Remove all temporary files created by KicomAV (initialize the operating system's temporary folder)
         k2file.K2Tempfile().removetempdir()
@@ -77,15 +95,16 @@ class Engine:
     # __del__(self)
     # Terminate the class
     # ---------------------------------------------------------------------
-    def __del__(self):
+    def __del__(self) -> None:
         # Cleanup worker pool first
         self.cleanup_worker_pool()
 
         # Remove all temporary files created by KicomAV
-        self.temp_path.removetempdir()
+        if self.temp_path is not None:
+            self.temp_path.removetempdir()
 
-        with contextlib.suppress(OSError):
-            shutil.rmtree(self.temp_path.temp_path)
+            with contextlib.suppress(OSError):
+                shutil.rmtree(self.temp_path.temp_path)
 
     # ---------------------------------------------------------------------
     # set_plugins(self, plugins_path)
@@ -93,7 +112,7 @@ class Engine:
     # Argument: plugins_path - Plugin engine path
     # Return: Success or not
     # ---------------------------------------------------------------------
-    def set_plugins(self, plugins_path, callback_fn=None):
+    def set_plugins(self, plugins_path: str, callback_fn: Optional[Callable[[str], None]] = None) -> bool:
         # Save the plugin path
         self.plugins_path = plugins_path
 
@@ -104,8 +123,8 @@ class Engine:
             return False
 
         if self.verbose:
-            print("[*] kicom.lst :")
-            print(f"   {self.kmdfiles}")
+            logger.debug("[*] kicom.lst :")
+            logger.debug("   %s", self.kmdfiles)
 
         # Load plugin files in priority order
         for plugin_name in self.kmdfiles:
@@ -150,9 +169,9 @@ class Engine:
                     self.max_datetime = max(self.max_datetime, t_datetime)
 
         if self.verbose:
-            print("[*] kmd_modules :")
-            print(f"   {self.kmd_modules}")
-            print(f"[*] Last updated {self.max_datetime.ctime()} UTC")
+            logger.debug("[*] kmd_modules :")
+            logger.debug("   %s", self.kmd_modules)
+            logger.debug("[*] Last updated %s UTC", self.max_datetime.ctime())
 
         return True
 
@@ -160,7 +179,7 @@ class Engine:
     # __set_temppath(self)
     # Set the given temporary folder
     # ---------------------------------------------------------------------
-    def __set_temppath(self):
+    def __set_temppath(self) -> None:
         # Set the temporary folder
         self.temp_path = k2file.K2Tempfile()
 
@@ -168,7 +187,7 @@ class Engine:
     # create_instance(self)
     # Create an instance of the antivirus engine
     # ---------------------------------------------------------------------
-    def create_instance(self):
+    def create_instance(self) -> Optional["EngineInstance"]:
         ei = EngineInstance(self.plugins_path, self.temp_path, self.max_datetime, self.verbose)
         return ei if ei.create(self.kmd_modules) else None
 
@@ -177,7 +196,7 @@ class Engine:
     # Create an independent instance for parallel worker threads
     # Each worker needs its own plugin instances to avoid thread conflicts
     # ---------------------------------------------------------------------
-    def create_instance_for_worker(self):
+    def create_instance_for_worker(self) -> Optional["EngineInstance"]:
         # Create new temp path for this worker
         worker_temp_path = k2file.K2Tempfile()
         ei = EngineInstance(self.plugins_path, worker_temp_path, self.max_datetime, self.verbose)
@@ -188,7 +207,7 @@ class Engine:
     # Initialize worker pool with specified size (called once, reused across scans)
     # Argument: size - Number of workers to create
     # ---------------------------------------------------------------------
-    def init_worker_pool(self, size):
+    def init_worker_pool(self, size: int) -> None:
         if self.worker_pool_size >= size:
             return  # Pool already initialized with enough workers
 
@@ -207,7 +226,7 @@ class Engine:
     #           options - Scan options to apply
     # Return: List of initialized worker instances
     # ---------------------------------------------------------------------
-    def get_workers_from_pool(self, count, options):
+    def get_workers_from_pool(self, count: int, options: Dict[str, Any]) -> List["EngineInstance"]:
         # Ensure pool has enough workers
         if self.worker_pool_size < count:
             self.init_worker_pool(count)
@@ -231,7 +250,7 @@ class Engine:
     # cleanup_worker_pool(self)
     # Cleanup all workers in the pool
     # ---------------------------------------------------------------------
-    def cleanup_worker_pool(self):
+    def cleanup_worker_pool(self) -> None:
         for worker in self.worker_pool:
             try:
                 worker.uninit()
@@ -246,7 +265,7 @@ class Engine:
     # Argument: plugin_path - Plugin file path
     # ---------------------------------------------------------------------
 
-    def __get_last_plugin_build_time(self, plugin_path):
+    def __get_last_plugin_build_time(self, plugin_path: str) -> None:
         try:
             mtime = os.path.getmtime(plugin_path)
             t_datetime = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc)
@@ -260,7 +279,7 @@ class Engine:
     # Argument: plugin_list_file - Full path of the kicom.lst file
     # Return: Success or not
     # ---------------------------------------------------------------------
-    def __get_plugin_list(self, plugin_list_file):
+    def __get_plugin_list(self, plugin_list_file: str) -> bool:
         plugin_files = []  # Priority list
 
         try:
@@ -283,6 +302,8 @@ class Engine:
 # EngineInstance class
 # -------------------------------------------------------------------------
 class EngineInstance:
+    """Instance of the antivirus engine for scanning operations."""
+
     # ---------------------------------------------------------------------
     # __init__(self, plugins_path, temp_path, max_datetime, verbose=False)
     # Initialize the class
@@ -291,39 +312,55 @@ class EngineInstance:
     #           max_datetime - Latest time value of the plugin engine
     #           verbose      - Debug mode
     # ---------------------------------------------------------------------
-    def __init__(self, plugins_path, temp_path, max_datetime, verbose=False):
-        self.verbose = verbose  # Debug mode
+    def __init__(
+        self,
+        plugins_path: Optional[str],
+        temp_path: Optional[k2file.K2Tempfile],
+        max_datetime: datetime.datetime,
+        verbose: bool = False,
+    ) -> None:
+        self.verbose: bool = verbose  # Debug mode
 
-        self.plugins_path = plugins_path  # Plugin engine path
-        self.temp_path = temp_path  # Temporary folder class
-        self.max_datetime = max_datetime  # Latest time value of the plugin engine
+        self.plugins_path: Optional[str] = plugins_path  # Plugin engine path
+        self.temp_path: Optional[k2file.K2Tempfile] = temp_path  # Temporary folder class
+        self.max_datetime: datetime.datetime = max_datetime  # Latest time value of the plugin engine
 
         # Build rules_paths from environment variables
-        self.rules_paths = {
+        self.rules_paths: Dict[str, Optional[str]] = {
             "system": os.environ.get("SYSTEM_RULES_BASE", "").strip() or None,
             "user": os.environ.get("USER_RULES_BASE", "").strip() or None,
         }
 
-        self.options = {}  # Options
+        self.options: Dict[str, Any] = {}  # Options
         self.set_options()  # Set default options
 
-        self.kavmain_inst = []  # KavMain instance of all plugins
+        self.kavmain_inst: List[Any] = []  # KavMain instance of all plugins
 
-        self.update_info = []  # List of compressed files for final treatment
+        self.update_info: List[Any] = []  # List of compressed files for final treatment
 
-        self.result = {}
-        self.identified_virus = set()  # Used to count unique viruses
+        self.result: Dict[str, int] = {}
+        self.identified_virus: set = set()  # Used to count unique viruses
         self.set_result()  # Initialize virus scan results
 
-        self.quarantine_name = {}  # Used to move files to the virus name folder when moving to the quarantine folder
+        self.quarantine_name: Dict[str, str] = {}  # Used to move files to the virus name folder
 
-        self.disinfect_callback_fn = None  # Virus treatment callback function
-        self.update_callback_fn = None  # Final virus compression callback function
-        self.quarantine_callback_fn = None  # Virus isolation callback function
+        self.disinfect_callback_fn: Optional[Callable] = None  # Virus treatment callback function
+        self.update_callback_fn: Optional[Callable] = None  # Final virus compression callback function
+        self.quarantine_callback_fn: Optional[Callable] = None  # Virus isolation callback function
 
         self.disable_path = re.compile(r"/<\w+>")
 
-        self.whitelist = []  # Whitelist for false positive exclusion
+        self.whitelist: List[str] = []  # Whitelist for false positive exclusion
+        self.exclusion_rule = None  # Exclusion rule for skipping files
+        self.scan_cache = None  # Scan cache for skipping unchanged files
+        self.signature_version = ""  # Signature version for cache validation
+
+        # Archive cache tracking
+        self._archive_scan_results: Dict[str, List[Dict[str, str]]] = {}  # {archive_path: [infected_entries]}
+        self._archive_contents_hash: Dict[str, str] = {}  # {archive_path: contents_hash}
+        self._archive_file_counts: Dict[str, int] = {}  # {archive_path: total_file_count}
+        self._archive_packed_counts: Dict[str, int] = {}  # {archive_path: total_packed_count}
+        self._archive_scanned_paths: Dict[str, List[str]] = {}  # {archive_path: [scanned_paths]}
 
     # ---------------------------------------------------------------------
     # create(self, kmd_modules)
@@ -331,7 +368,7 @@ class EngineInstance:
     # Argument: kmd_modules - List of KMD modules loaded into memory
     # Return: Success or not
     # ---------------------------------------------------------------------
-    def create(self, kmd_modules):  # Create an instance of the antivirus engine
+    def create(self, kmd_modules: List[types.ModuleType]) -> bool:
         for mod in kmd_modules:
             try:
                 t = mod.KavMain()  # Create an instance of the KavMain class for each plugin
@@ -343,7 +380,7 @@ class EngineInstance:
             return False
 
         if self.verbose:
-            print("[*] Count of KavMain : %d" % (len(self.kavmain_inst)))
+            logger.debug("[*] Count of KavMain : %d", len(self.kavmain_inst))
 
         return True
 
@@ -353,13 +390,13 @@ class EngineInstance:
     # Argument: callback_fn - Callback function (optional)
     # Return: Success or not
     # ---------------------------------------------------------------------
-    def init(self, callback_fn=None):
+    def init(self, callback_fn: Optional[Callable[[str], None]] = None) -> bool:
         # self.kavmain_inst is not the final instance.
         # init initialization command must be executed to register only normal plugins.
         t_kavmain_inst = []  # Final instance list
 
         if self.verbose:
-            print("[*] KavMain.init() :")
+            logger.debug("[*] KavMain.init() :")
 
         for inst in self.kavmain_inst:
             try:
@@ -370,7 +407,7 @@ class EngineInstance:
                     t_kavmain_inst.append(inst)
 
                     if self.verbose:
-                        print("    [-] %s.init() : %d" % (inst.__module__, ret))
+                        logger.debug("    [-] %s.init() : %d", inst.__module__, ret)
                 elif isinstance(callback_fn, types.FunctionType):
                     callback_fn(inst.__module__)
             except AttributeError:
@@ -381,7 +418,7 @@ class EngineInstance:
         if len(self.kavmain_inst):  # If there is at least one KavMain instance, success
             self.__load_whitelist()  # Load whitelist for false positive exclusion
             if self.verbose:
-                print(f"[*] Count of KavMain.init() : {len(self.kavmain_inst)}")
+                logger.debug("[*] Count of KavMain.init() : %d", len(self.kavmain_inst))
             return True
         else:
             return False
@@ -390,7 +427,7 @@ class EngineInstance:
     # __load_whitelist(self)
     # Load whitelist from SYSTEM_RULES_BASE/whitelist.txt for false positive exclusion
     # ---------------------------------------------------------------------
-    def __load_whitelist(self):
+    def __load_whitelist(self) -> None:
         self.whitelist = []
 
         # Get whitelist path from rules_paths
@@ -409,7 +446,7 @@ class EngineInstance:
                         self.whitelist.append(line)
 
             if self.verbose and self.whitelist:
-                print(f"[*] Whitelist loaded: {len(self.whitelist)} entries")
+                logger.debug("[*] Whitelist loaded: %d entries", len(self.whitelist))
         except IOError:
             pass  # Whitelist file is optional
 
@@ -419,7 +456,7 @@ class EngineInstance:
     # Argument: vname - Malware name to check
     # Return: True if whitelisted, False otherwise
     # ---------------------------------------------------------------------
-    def __is_whitelisted(self, vname):
+    def __is_whitelisted(self, vname: str) -> bool:
         import fnmatch
 
         for pattern in self.whitelist:
@@ -429,18 +466,208 @@ class EngineInstance:
         return False
 
     # ---------------------------------------------------------------------
+    # set_exclusion_rule(self, rule)
+    # Set file exclusion rule for skipping files during scan
+    # Argument: rule - ExclusionRule instance from k2exclude
+    # ---------------------------------------------------------------------
+    def set_exclusion_rule(self, rule) -> None:
+        self.exclusion_rule = rule
+
+    # ---------------------------------------------------------------------
+    # __should_exclude(self, filepath, filesize=None)
+    # Check if a file should be excluded from scanning
+    # Argument: filepath - Path to the file
+    #           filesize - File size in bytes (optional)
+    # Return: True if the file should be excluded
+    # ---------------------------------------------------------------------
+    def __should_exclude(self, filepath: str, filesize: Optional[int] = None) -> bool:
+        if self.exclusion_rule is None:
+            return False
+        return self.exclusion_rule.should_exclude(filepath, filesize)
+
+    # ---------------------------------------------------------------------
+    # set_scan_cache(self, cache, signature_version)
+    # Set scan cache for skipping unchanged files
+    # Argument: cache - ScanCache instance from k2cache
+    #           signature_version - Current signature version string
+    # ---------------------------------------------------------------------
+    def set_scan_cache(self, cache, signature_version: str = "") -> None:
+        self.scan_cache = cache
+        self.signature_version = signature_version
+
+    # ---------------------------------------------------------------------
+    # __check_cache(self, filepath)
+    # Check if file has valid cache entry (skip scanning if cached)
+    # Argument: filepath - Path to the file
+    # Return: Tuple of (is_cached, scan_result, malware_name) or (False, None, None)
+    # ---------------------------------------------------------------------
+    def __check_cache(self, filepath: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        if self.scan_cache is None:
+            return (False, None, None)
+
+        result = self.scan_cache.get_cached_result(filepath, self.signature_version)
+        if result:
+            return (True, result[0], result[1])
+        return (False, None, None)
+
+    # ---------------------------------------------------------------------
+    # __update_cache(self, filepath, scan_result, malware_name=None)
+    # Update cache with scan result
+    # Argument: filepath - Path to the file
+    #           scan_result - "clean", "infected", or "error"
+    #           malware_name - Name of detected malware (if infected)
+    # ---------------------------------------------------------------------
+    def __update_cache(self, filepath: str, scan_result: str, malware_name: Optional[str] = None) -> None:
+        if self.scan_cache is None:
+            return
+
+        try:
+            # Compute file hash for cache
+            from kicomav.kavcore.k2cache import compute_file_hash
+
+            file_hash = compute_file_hash(filepath)
+            if file_hash:
+                self.scan_cache.update(
+                    filepath,
+                    file_hash,
+                    scan_result,
+                    malware_name,
+                    self.signature_version,
+                )
+        except Exception:
+            pass  # Cache update failure is not critical
+
+    # ---------------------------------------------------------------------
+    # __check_archive_cache(self, archive_path, contents_hash)
+    # Check if archive is in cache and valid
+    # Return: (is_cached, scan_result, infected_entries, total_files, total_packed, scanned_paths)
+    # ---------------------------------------------------------------------
+    def __check_archive_cache(
+        self, archive_path: str, contents_hash: str
+    ) -> Tuple[bool, Optional[str], List[Dict[str, str]], int, int, List[str]]:
+        if self.scan_cache is None:
+            return (False, None, [], 0, 0, [])
+
+        try:
+            opt_arc = self.options.get("opt_arc", False)
+            result = self.scan_cache.get_archive_cached_result(
+                archive_path, contents_hash, self.signature_version, opt_arc
+            )
+            if result:
+                return (True, result[0], result[1], result[2], result[3], result[4])
+        except Exception:
+            pass
+
+        return (False, None, [], 0, 0, [])
+
+    # ---------------------------------------------------------------------
+    # __update_archive_cache(self, archive_path, contents_hash, infected_entries, total_files, total_packed, scanned_paths)
+    # Update archive cache with scan results
+    # ---------------------------------------------------------------------
+    def __update_archive_cache(
+        self,
+        archive_path: str,
+        contents_hash: str,
+        infected_entries: List[Dict[str, str]],
+        total_files: int = 0,
+        total_packed: int = 0,
+        scanned_paths: Optional[List[str]] = None,
+    ) -> None:
+        if self.scan_cache is None:
+            return
+
+        try:
+            from kicomav.kavcore.k2cache import compute_file_hash
+
+            archive_hash = compute_file_hash(archive_path)
+            if archive_hash:
+                scan_result = "infected" if infected_entries else "clean"
+                opt_arc = self.options.get("opt_arc", False)
+                self.scan_cache.update_archive(
+                    archive_path,
+                    archive_hash,
+                    contents_hash,
+                    scan_result,
+                    infected_entries,
+                    self.signature_version,
+                    total_files,
+                    total_packed,
+                    scanned_paths,
+                    opt_arc,
+                )
+        except Exception:
+            pass  # Cache update failure is not critical
+
+    # ---------------------------------------------------------------------
+    # __compute_arclist_hash(self, arc_file_list)
+    # Compute hash of archive contents from arclist
+    # ---------------------------------------------------------------------
+    def __compute_arclist_hash(self, arc_file_list: List) -> str:
+        import hashlib
+
+        h = hashlib.sha256()
+        # Sort by filename for consistent hash
+        sorted_list = sorted(arc_file_list, key=lambda x: x.get_additional_filename())
+        for fs in sorted_list:
+            # Use filename and level for hash
+            entry_str = f"{fs.get_additional_filename()}|{fs.get_level()}\n"
+            h.update(entry_str.encode("utf-8"))
+        return h.hexdigest()
+
+    # ---------------------------------------------------------------------
+    # __track_archive_infection(self, archive_path, entry_path, malware_name)
+    # Track infected entry within archive for cache update
+    # ---------------------------------------------------------------------
+    def __track_archive_infection(self, archive_path: str, entry_path: str, malware_name: str) -> None:
+        if archive_path not in self._archive_scan_results:
+            self._archive_scan_results[archive_path] = []
+        self._archive_scan_results[archive_path].append(
+            {
+                "path": entry_path,
+                "malware": malware_name,
+            }
+        )
+
+    # ---------------------------------------------------------------------
+    # __finalize_archive_cache(self, archive_path)
+    # Finalize and update archive cache after scanning
+    # ---------------------------------------------------------------------
+    def __finalize_archive_cache(self, archive_path: str) -> None:
+        if self.scan_cache is None:
+            return
+
+        contents_hash = self._archive_contents_hash.get(archive_path)
+        if not contents_hash:
+            return
+
+        infected_entries = self._archive_scan_results.get(archive_path, [])
+        total_files = self._archive_file_counts.get(archive_path, 0)
+        total_packed = self._archive_packed_counts.get(archive_path, 0)
+        scanned_paths = self._archive_scanned_paths.get(archive_path, [])
+        self.__update_archive_cache(
+            archive_path, contents_hash, infected_entries, total_files, total_packed, scanned_paths
+        )
+
+        # Clean up tracking data
+        self._archive_scan_results.pop(archive_path, None)
+        self._archive_contents_hash.pop(archive_path, None)
+        self._archive_file_counts.pop(archive_path, None)
+        self._archive_packed_counts.pop(archive_path, None)
+        self._archive_scanned_paths.pop(archive_path, None)
+
+    # ---------------------------------------------------------------------
     # uninit(self)
     # Terminate the entire plugin engine.
     # ---------------------------------------------------------------------
-    def uninit(self):
+    def uninit(self) -> None:
         if self.verbose:
-            print("[*] KavMain.uninit() :")
+            logger.debug("[*] KavMain.uninit() :")
 
         for inst in self.kavmain_inst:
             try:
                 ret = inst.uninit()
                 if self.verbose:
-                    print(f"    [-] {inst.__module__}.uninit() : {ret}")
+                    logger.debug("    [-] %s.uninit() : %s", inst.__module__, ret)
             except AttributeError:
                 continue
 
@@ -449,11 +676,11 @@ class EngineInstance:
     # Get the plugin engine information.
     # Return: List of plugin engine information
     # ---------------------------------------------------------------------
-    def getinfo(self):
+    def getinfo(self) -> List[Dict[str, Any]]:
         ginfo = []  # Store plugin engine information
 
         if self.verbose:
-            print("[*] KavMain.getinfo() :")
+            logger.debug("[*] KavMain.getinfo() :")
 
         for inst in self.kavmain_inst:
             try:
@@ -461,9 +688,9 @@ class EngineInstance:
                 ginfo.append(ret)
 
                 if self.verbose:
-                    print(f"    [-] {inst.__module__}.getinfo() :")
+                    logger.debug("    [-] %s.getinfo() :", inst.__module__)
                     for key in ret.keys():
-                        print(f"        - {key} : {ret[key]}")
+                        logger.debug("        - %s : %s", key, ret[key])
             except AttributeError:
                 continue
 
@@ -475,7 +702,7 @@ class EngineInstance:
     # Argument: callback - Callback function (optional)
     # Return: List of viruses (empty if callback function is used)
     # ---------------------------------------------------------------------
-    def listvirus(self, *callback):
+    def listvirus(self, *callback: Callable) -> List[str]:
         vlist = []  # List of viruses that can be detected/cured
 
         argc = len(callback)  # Check the number of arguments
@@ -488,7 +715,7 @@ class EngineInstance:
             return []
 
         if self.verbose:
-            print("[*] KavMain.listvirus() :")
+            logger.debug("[*] KavMain.listvirus() :")
 
         for inst in self.kavmain_inst:
             try:
@@ -501,9 +728,9 @@ class EngineInstance:
                     vlist += ret
 
                 if self.verbose:
-                    print(f"    [-] {inst.__module__}.listvirus() :")
+                    logger.debug("    [-] %s.listvirus() :", inst.__module__)
                     for vname in ret:
-                        print(f"        - {vname}")
+                        logger.debug("        - %s", vname)
             except AttributeError:
                 continue
 
@@ -518,7 +745,7 @@ class EngineInstance:
     #          1 - Virus scanning forcibly terminated using Ctrl+C
     #         -1 - Too many callback functions
     # ---------------------------------------------------------------------
-    def scan(self, filename, *callback):
+    def scan(self, filename: str, *callback: Callable) -> int:
         from kicomav.plugins import kernel
 
         # If scanning a file one by one, the self.update_info information is accumulated due to compression
@@ -545,14 +772,14 @@ class EngineInstance:
 
         # 1. Register the file in the virus scanning target list
         file_info = k2file.FileStruct(filename)
-        file_scan_list = [file_info]
+        file_scan_list = deque([file_info])
 
         # Scan subfolders only once
         is_sub_dir_scan = True
 
         while len(file_scan_list):
             try:
-                t_file_info = file_scan_list.pop(0)  # Get the file to be scanned
+                t_file_info = file_scan_list.popleft()  # Get the file to be scanned
                 real_name = t_file_info.get_filename()
 
                 # If it is a folder, register only the internal file list
@@ -573,7 +800,8 @@ class EngineInstance:
 
                     if is_sub_dir_scan:
                         # Add the files in the folder to the virus scanning target list
-                        flist = glob.glob1(real_name, "*")
+                        # Use os.scandir instead of glob.glob1 to include hidden files/folders
+                        flist = [entry.name for entry in os.scandir(real_name)]
                         tmp_flist = []
 
                         for rfname in flist:
@@ -581,7 +809,8 @@ class EngineInstance:
                             tmp_info = k2file.FileStruct(rfname)
                             tmp_flist.append(tmp_info)
 
-                        file_scan_list = tmp_flist + file_scan_list
+                        # Add to front of deque (extendleft reverses, so we reverse first)
+                        file_scan_list.extendleft(reversed(tmp_flist))
 
                     if self.options["opt_nor"]:  # Whether to search for subfolders
                         is_sub_dir_scan = False  # Do not search for subfolders
@@ -589,6 +818,46 @@ class EngineInstance:
                     os.path.isfile(real_name) or t_file_info.is_archive()
                 ):  # Is the target a file? Is it a decompression target?
                     self.result["Files"] += 1  # Count the number of files
+
+                    # Track file count and path for archive cache
+                    if t_file_info.get_additional_filename():  # Is archive entry
+                        master_file = t_file_info.get_master_filename()
+                        if master_file in self._archive_file_counts:
+                            self._archive_file_counts[master_file] += 1
+                        if master_file in self._archive_scanned_paths:
+                            self._archive_scanned_paths[master_file].append(t_file_info.get_additional_filename())
+
+                    # Check exclusion rule (only for real files, not archive entries)
+                    if real_name and self.__should_exclude(real_name):
+                        continue  # Skip excluded files
+
+                    # Check cache for unchanged files (only for real files)
+                    # When opt_arc is True (-r option), don't use scan_cache
+                    # because files cached by -I may skip archive scanning in -r -I mode
+                    if real_name and os.path.isfile(real_name):
+                        use_scan_cache = self.scan_cache and not self.options.get("opt_arc", False)
+                        if use_scan_cache:
+                            is_cached, cached_result, cached_malware = self.__check_cache(real_name)
+                            if is_cached:
+                                # Use cached result
+                                ret_value["result"] = cached_result == "infected"
+                                ret_value["engine_id"] = -1
+                                ret_value["virus_name"] = cached_malware or ""
+                                ret_value["virus_id"] = -1
+                                ret_value["scan_state"] = (
+                                    kernel.INFECTED if cached_result == "infected" else kernel.NOT_FOUND
+                                )
+                                ret_value["file_struct"] = t_file_info
+
+                                if cached_result == "infected":
+                                    self.result["Infected_files"] += 1
+                                    if cached_malware:
+                                        self.identified_virus.update([cached_malware])
+
+                                if self.options["opt_list"] or cached_result == "infected":
+                                    self.call_scan_callback_fn(scan_callback_fn, ret_value)
+
+                                continue  # Skip actual scan, use cached result
 
                     # If it is a compressed file, decompress it
                     if real_name == "":  # If the actual file name does not exist, it is a compressed file
@@ -620,11 +889,33 @@ class EngineInstance:
 
                         self.call_scan_callback_fn(scan_callback_fn, ret_value)
 
-                    # 2. Format analysis
-                    ff = self.format(t_file_info)
+                    # 2. Format analysis and virus scan with shared mmap
+                    filename = t_file_info.get_filename()
+                    ff = {}
+                    ret, vname, mid, scan_state, eid = False, "", -1, kernel.NOT_FOUND, -1
 
-                    # Virus scan of the file
-                    ret, vname, mid, scan_state, eid = self.__scan_file(t_file_info, ff)
+                    fp_scan = None
+                    mm_scan = None
+                    try:
+                        if os.path.isfile(filename) and os.path.getsize(filename) > 0:
+                            fp_scan = open(filename, "rb")
+                            mm_scan = mmap.mmap(fp_scan.fileno(), 0, access=mmap.ACCESS_READ)
+
+                            # Format analysis with shared mmap
+                            ff = self.format(t_file_info, mm_scan)
+
+                            # Virus scan with shared mmap
+                            scan_result = self.__scan_file(t_file_info, ff, mm_scan)
+                            if scan_result:
+                                ret, vname, mid, scan_state, eid = scan_result
+                    except (IOError, OSError, ValueError):
+                        pass
+                    finally:
+                        # Use 'is not None' to avoid ValueError on closed mmap (Windows)
+                        if mm_scan is not None:
+                            mm_scan.close()
+                        if fp_scan is not None:
+                            fp_scan.close()
 
                     if ret:  # Count the number of virus diagnoses
                         if scan_state == kernel.INFECTED:
@@ -657,6 +948,20 @@ class EngineInstance:
                         if not self.quarantine_name.get(t_master_file, None):
                             self.quarantine_name[t_master_file] = ret_value["virus_name"]
 
+                        # Update cache for infected files (only real files, not archive entries)
+                        if real_name and os.path.isfile(real_name):
+                            self.__update_cache(real_name, "infected", ret_value["virus_name"])
+
+                        # Track archive infection for archive cache
+                        if t_file_info.get_additional_filename():  # Is archive entry
+                            master_file = t_file_info.get_master_filename()
+                            if master_file and os.path.isfile(master_file):
+                                self.__track_archive_infection(
+                                    master_file,
+                                    t_file_info.get_additional_filename(),
+                                    ret_value["virus_name"],
+                                )
+
                         action_type = self.call_scan_callback_fn(scan_callback_fn, ret_value)
 
                         if self.options["opt_move"] or self.options["opt_copy"]:
@@ -683,7 +988,7 @@ class EngineInstance:
                             ):
                                 if os.path.exists(t_file_info.get_filename()):
                                     t_file_info.set_modify(True)
-                                    file_scan_list = [t_file_info] + file_scan_list
+                                    file_scan_list.appendleft(t_file_info)
                                 else:
                                     # Final treatment of compressed files
                                     self.__update_process(t_file_info)
@@ -697,20 +1002,138 @@ class EngineInstance:
                         with contextlib.suppress(zipfile.BadZipfile):
                             arc_file_list = self.arclist(t_file_info, ff)
                             if len(arc_file_list):
-                                file_scan_list = arc_file_list + file_scan_list
+                                # Check archive cache for top-level archives
+                                master_file = t_file_info.get_master_filename()
+                                is_top_level_archive = (
+                                    real_name
+                                    and os.path.isfile(real_name)
+                                    and not t_file_info.get_additional_filename()
+                                )
+
+                                if is_top_level_archive and self.scan_cache:
+                                    # Compute contents hash and check cache
+                                    contents_hash = self.__compute_arclist_hash(arc_file_list)
+                                    (
+                                        is_cached,
+                                        cached_result,
+                                        cached_infections,
+                                        cached_total_files,
+                                        cached_total_packed,
+                                        cached_scanned_paths,
+                                    ) = self.__check_archive_cache(real_name, contents_hash)
+
+                                    if is_cached:
+                                        # Use cached archive result - skip internal scanning
+                                        # Mark as archive to prevent scan_cache update
+                                        self._archive_contents_hash[real_name] = contents_hash
+                                        # Add cached total file count to Files (they won't go through queue)
+                                        self.result["Files"] += cached_total_files
+                                        # Add packed count: +1 for this archive + nested archive count
+                                        self.result["Packed"] += cached_total_packed + 1
+
+                                        # Build set of infected paths for quick lookup
+                                        infected_paths = set()
+                                        if cached_result == "infected" and cached_infections:
+                                            for infection in cached_infections:
+                                                infected_paths.add(infection["path"])
+                                                self.result["Infected_files"] += 1
+                                                self.identified_virus.update([infection["malware"]])
+
+                                                # Report cached infection via callback
+                                                cached_ret_value = {
+                                                    "result": True,
+                                                    "engine_id": -1,
+                                                    "virus_name": infection["malware"],
+                                                    "virus_id": -1,
+                                                    "scan_state": kernel.INFECTED,
+                                                    "file_struct": t_file_info,
+                                                }
+                                                # Create a temporary file struct for display
+                                                cached_fs = k2file.FileStruct()
+                                                cached_fs.set_archive(
+                                                    -1,
+                                                    real_name,
+                                                    infection["path"],
+                                                    infection["path"],
+                                                    real_name,
+                                                    False,
+                                                    kernel.MASTER_IGNORE,
+                                                    1,
+                                                )
+                                                cached_ret_value["file_struct"] = cached_fs
+                                                self.call_scan_callback_fn(scan_callback_fn, cached_ret_value)
+
+                                        # Show "ok" for non-infected entries when opt_list is True
+                                        if self.options["opt_list"] and cached_scanned_paths:
+                                            for entry_path in cached_scanned_paths:
+                                                if entry_path not in infected_paths:
+                                                    # Create file struct for display
+                                                    cached_fs = k2file.FileStruct()
+                                                    cached_fs.set_archive(
+                                                        -1,
+                                                        real_name,
+                                                        entry_path,
+                                                        entry_path,
+                                                        real_name,
+                                                        False,
+                                                        kernel.MASTER_IGNORE,
+                                                        1,
+                                                    )
+                                                    cached_ret_value = {
+                                                        "result": False,
+                                                        "engine_id": -1,
+                                                        "virus_name": "",
+                                                        "virus_id": -1,
+                                                        "scan_state": kernel.NOT_FOUND,
+                                                        "file_struct": cached_fs,
+                                                    }
+                                                    self.call_scan_callback_fn(scan_callback_fn, cached_ret_value)
+                                        # Don't add internal files to queue - cached
+                                    else:
+                                        # Not cached - scan normally
+                                        self._archive_contents_hash[real_name] = contents_hash
+                                        self._archive_scan_results[real_name] = []
+                                        self._archive_file_counts[real_name] = 0  # Initialize file counter
+                                        self._archive_packed_counts[real_name] = 0  # Initialize packed counter
+                                        self._archive_scanned_paths[real_name] = []  # Initialize scanned paths
+                                        self.result["Packed"] += 1
+                                        file_scan_list.extendleft(reversed(arc_file_list))
+                                else:
+                                    # Nested archive or cache disabled - scan normally
+                                    # Track packed count for archive cache
+                                    if t_file_info.get_additional_filename():  # Is nested archive
+                                        master_file = t_file_info.get_master_filename()
+                                        if master_file in self._archive_packed_counts:
+                                            self._archive_packed_counts[master_file] += 1
+                                    self.result["Packed"] += 1
+                                    file_scan_list.extendleft(reversed(arc_file_list))
 
                         # Output the scan result
                         if self.options["opt_list"]:  # Whether to output all lists
                             self.call_scan_callback_fn(scan_callback_fn, ret_value)
+
+                        # Update cache for clean files (only real files, not archive entries)
+                        # Skip archive files - they use archive_cache instead
+                        if real_name and os.path.isfile(real_name):
+                            if real_name not in self._archive_contents_hash:
+                                # Not an archive file with internal contents - use scan_cache
+                                self.__update_cache(real_name, "clean")
+
+                        # Finalize archive cache if this was the last entry of an archive
+                        if t_file_info.get_additional_filename():
+                            master_file = t_file_info.get_master_filename()
+                            if master_file in self._archive_contents_hash:
+                                # Check if queue has more entries from this archive
+                                has_more = any(fs.get_master_filename() == master_file for fs in file_scan_list)
+                                if not has_more:
+                                    self.__finalize_archive_cache(master_file)
             except KeyboardInterrupt:
                 return 1  # Keyboard termination
             except k2const.PluginUnexpectedError:
                 # Count plugin unexpected errors as IO errors
                 self.result["IO_errors"] += 1
             except Exception:
-                import traceback
-
-                print(traceback.format_exc())
+                logger.exception("Unexpected error during scan")
 
         self.__update_process(None, True)  # Final file cleanup
 
@@ -826,7 +1249,6 @@ class EngineInstance:
 
         def file_producer():
             """Multi-producer that parallelizes directory traversal"""
-            from concurrent.futures import ThreadPoolExecutor, as_completed
 
             BATCH_SIZE = 100  # Batch size for reducing queue lock contention
             MAX_PRODUCERS = min(4, max_workers)  # Limit producer threads
@@ -1035,6 +1457,10 @@ class EngineInstance:
 
             # Lock-free: update worker-local counter
             local_result["Files"] += 1
+
+            # Check exclusion rule (only for real files, not archive entries)
+            if real_name and worker_instance._EngineInstance__should_exclude(real_name):
+                continue  # Skip excluded files
 
             # Handle archive extraction
             if real_name == "":
@@ -1385,20 +1811,22 @@ class EngineInstance:
         return d_ret
 
     # ---------------------------------------------------------------------
-    # __scan_file(self, file_struct, fileformat)
+    # __scan_file(self, file_struct, fileformat, mm=None)
     # Request virus scan from plugin engine.
     # Argument: file_struct - File information structure of decompressed file
-    #         format      - File format analysis information
+    #           fileformat  - File format analysis information
+    #           mm          - Optional mmap object (for reuse optimization)
     # Return: (Whether virus is found, virus name, virus ID, virus scan state, plugin engine ID)
     # ---------------------------------------------------------------------
-    def __scan_file(self, file_struct, fileformat):
+    def __scan_file(self, file_struct, fileformat, mm=None):
         from kicomav.plugins import kernel
 
         if self.verbose:
-            print("[*] KavMain.__scan_file() :")
+            logger.debug("[*] KavMain.__scan_file() :")
 
         fp = None
-        mm = None
+        mm_local = mm  # Use provided mmap or create new one
+        owns_mm = mm is None  # Track if we own the mmap (need to close it)
 
         try:
             ret = False
@@ -1417,34 +1845,36 @@ class EngineInstance:
             if os.path.getsize(filename) == 0:
                 raise EngineKnownError("File Size is Zero!")
 
-            fp = open(filename, "rb")
-            mm = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
+            if owns_mm:
+                fp = open(filename, "rb")
+                mm_local = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
 
             for i, inst in enumerate(self.kavmain_inst):
                 try:
-                    ret, vname, mid, scan_state = inst.scan(mm, filename, fileformat, filename_ex)
+                    ret, vname, mid, scan_state = inst.scan(mm_local, filename, fileformat, filename_ex)
                     if ret:  # If a virus is found
                         # Check if the malware name is in the whitelist
                         if self.__is_whitelisted(vname):
                             if self.verbose:
-                                print(f"    [-] {inst.__module__}.__scan_file() : {vname} (whitelisted)")
+                                logger.debug("    [-] %s.__scan_file() : %s (whitelisted)", inst.__module__, vname)
                             ret = False  # Reset detection result
                             continue  # Continue to next engine
 
                         eid = i  # ID of the plugin engine that found the virus
 
                         if self.verbose:
-                            print(f"    [-] {inst.__module__}.__scan_file() : {vname}")
+                            logger.debug("    [-] %s.__scan_file() : %s", inst.__module__, vname)
 
                         break
                 except AttributeError:
                     continue
 
-            if mm:
-                mm.close()
-
-            if fp:
-                fp.close()
+            # Only close if we created the mmap
+            if owns_mm:
+                if mm_local:
+                    mm_local.close()
+                if fp:
+                    fp.close()
 
             return ret, vname, mid, scan_state, eid
         except (EngineKnownError, ValueError, OSError) as e:
@@ -1452,17 +1882,17 @@ class EngineInstance:
         except KeyboardInterrupt:
             raise KeyboardInterrupt
         except Exception:
-            import traceback
-
-            print(traceback.format_exc())
+            logger.exception("Unexpected error during file scan")
 
             self.result["IO_errors"] += 1  # Number of file I/O errors
 
-        if mm:
-            mm.close()
-
-        if fp:
-            fp.close()
+        # Only close resources we created (when owns_mm is True)
+        # Don't close caller's mmap - they are responsible for cleanup
+        if owns_mm:
+            if mm_local is not None:
+                mm_local.close()
+            if fp is not None:
+                fp.close()
 
         return False, "", -1, kernel.NOT_FOUND, -1
 
@@ -1478,7 +1908,7 @@ class EngineInstance:
         ret = False
 
         if self.verbose:
-            print("[*] KavMain.disinfect() :")
+            logger.debug("[*] KavMain.disinfect() :")
 
         with contextlib.suppress(AttributeError):
             # Request treatment only from the plugin engine that diagnosed the virus.
@@ -1486,7 +1916,7 @@ class EngineInstance:
             ret = inst.disinfect(filename, malware_id)
 
             if self.verbose:
-                print(f"    [-] {inst.__module__}.disinfect() : {ret}")
+                logger.debug("    [-] %s.disinfect() : %s", inst.__module__, ret)
 
         return ret
 
@@ -1611,10 +2041,7 @@ class EngineInstance:
                 if self.options["opt_arc"]:
                     # If the compression inspection option is set, call all
                     arc_list = inst.arclist(rname, fileformat, self.options.get("opt_password"))
-
-                    # However, the count is processed only when it is an archive engine
-                    if len(arc_list) and is_archive_engine:
-                        self.result["Packed"] += 1
+                    # Note: Packed count is handled in main scan loop for cache consistency
                 elif not is_archive_engine:
                     arc_list = inst.arclist(rname, fileformat)
             if len(arc_list):  # If the compressed list exists, add and exit
@@ -1627,7 +2054,7 @@ class EngineInstance:
                             deep_name1 = deep_name
                             name1 = name
 
-                            if type(deep_name) != type(name):
+                            if not isinstance(deep_name, type(name)):
                                 if isinstance(deep_name, str):
                                     name1 = name.encode("utf-8").decode("utf-8", "ignore")
                                 elif isinstance(name, str):
@@ -1652,38 +2079,42 @@ class EngineInstance:
         return file_scan_list
 
     # ---------------------------------------------------------------------
-    # format(self, file_struct)
+    # format(self, file_struct, mm=None)
     # Request file format analysis from plugin engine.
     # Argument: file_struct - File information structure of decompressed file
+    #           mm - Optional mmap object (for reuse optimization)
     # Return: {File format analysis information} or {}
     # ---------------------------------------------------------------------
-    def format(self, file_struct):
+    def format(self, file_struct, mm=None):
         ret = {}
         filename = file_struct.get_filename()
         filename_ex = file_struct.get_additional_filename()  # Internal file name of the compressed file
 
         fp = None
-        mm = None
+        mm_local = mm  # Use provided mmap or create new one
+        owns_mm = mm is None  # Track if we own the mmap (need to close it)
 
         with contextlib.suppress(IOError, EngineKnownError, ValueError, OSError):
             # If the file size is 0, there is no need to perform format analysis.
             if os.path.getsize(filename) == 0:
                 raise EngineKnownError("File Size is Zero!")
 
-            fp = open(filename, "rb")
-            mm = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
+            if owns_mm:
+                fp = open(filename, "rb")
+                mm_local = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
 
             # Call the format member function of the engine module
             for inst in self.kavmain_inst:
                 with contextlib.suppress(AttributeError):
-                    if ff := inst.format(mm, filename, filename_ex):
+                    if ff := inst.format(mm_local, filename, filename_ex):
                         ret |= ff
 
-        if mm:
-            mm.close()
-
-        if fp:
-            fp.close()
+        # Only close if we created the mmap
+        if owns_mm:
+            if mm_local:
+                mm_local.close()
+            if fp:
+                fp.close()
 
         return ret
 
@@ -1693,7 +2124,7 @@ class EngineInstance:
     # Return: Latest version information
     # ---------------------------------------------------------------------
     def get_version(self):
-        from kicomav.kavcore.updater import get_last_update_time
+        from kicomav.kavcore.k2updater import get_last_update_time
 
         return get_last_update_time()  # prefer update.cfg for update interval and fall back to __last_update__
 

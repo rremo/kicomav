@@ -17,16 +17,13 @@ import tempfile
 import zlib
 from ctypes import POINTER, Structure, addressof, c_char, c_ubyte, c_uint, c_ushort, c_void_p, memmove, sizeof
 
-from kicomav.plugins import cryptolib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.plugins import ole
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
 
-# Module logger
 logger = logging.getLogger(__name__)
-
 
 # -------------------------------------------------------------------------
 # Malware ID
@@ -112,8 +109,7 @@ def set_uint32(val):
 # ---------------------------------------------------------------------
 def disinfect_word97_macro(data, verbose=False):
     if data[0x0B] & 0x01 == 0x01:
-        if verbose:
-            print("PASSWORD")
+        logger.debug("Word97 document is password protected")
         return False, None  # The document is password protected
 
     data = data[:0x15E] + b"\x00\x00\x00\x00" + data[0x162:]
@@ -231,8 +227,7 @@ def disinfect_excel97_macro(data: bytes, verbose=False):
     d3 = get_biff_record_size16(data, len(d1) + len(d2))
 
     if get_uint16(d2, 0) == 0x002F or get_uint16(d3, 0) == 0x002F:
-        if verbose:
-            print("PASSWORD")
+        logger.debug("Excel97 sheet is password protected")
         return False, None  # The sheet is password protected
 
     # Disinfect the macro in the workbook
@@ -249,8 +244,7 @@ def disinfect_excel97_macro(data: bytes, verbose=False):
             if get_uint16(data, worksheet_pos + 6) == 0x06:  # Sheet containing macro : dt
                 t_ret, data = disinfect_excel_worksheet(data, worksheet_pos)
                 if t_ret is False:
-                    if verbose:
-                        print("SHEET")
+                    logger.debug("Excel97 worksheet disinfection failed")
                     return False, None
 
                 data = data[: off + 8] + set_uint16(0x0001) + data[off + 10 :]
@@ -409,8 +403,7 @@ def dir_informationrecord(data, off, verbose=False):
         raise Error("dir:InformationRecord:NameRecord")
     off += len(t_data)
 
-    if verbose:
-        print(f"Name : {t_data[6:]}")
+    logger.debug("Name: %s", t_data[6:])
 
     # DocStringRecord contains 2 records
     t_data = get_record_size32(data, off)
@@ -481,8 +474,7 @@ def dir_referencesrecord(data, off, verbose=False):
 
         off += len(t_data)
 
-        if verbose:
-            print(f"ReferencesRecord Name : {t_data[6:]}")
+        logger.debug("ReferencesRecord Name: %s", t_data[6:])
 
         t_data = get_record_size32(data, off)
         val = get_uint16(t_data, 0)
@@ -586,8 +578,7 @@ def dir_modulesrecord(data, off, verbose=False):
         m_off = get_uint32(t_data, 6)
         off += 40
 
-        if verbose:
-            print("ModulesRecord Name : %s : %08X" % (m_name, m_off))
+        logger.debug("ModulesRecord Name: %s : %08X", m_name, m_off)
 
         vba_modules.append((m_name, m_off))
 
@@ -807,7 +798,7 @@ class KavMain(MalwareDetectorBase):
                                     if self.verbose:
                                         kavutil.vprint("Macro Source")
                                         kavutil.vprint(None, "PPS", f"{t_pps_name}")
-                                        print(buf)
+                                        logger.debug("Macro content:\n%s", buf.decode("utf-8", errors="replace"))
 
                                     buf = self.p_vba_cmt.sub(b"", buf)
                                     buf = buf.lower()
@@ -836,11 +827,11 @@ class KavMain(MalwareDetectorBase):
                                             )
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except ole.Error as e:
-            logger.debug("OLE error for %s: %s", filename, e)
+            self.logger.debug("OLE error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         if o:
             o.close()
@@ -860,17 +851,20 @@ class KavMain(MalwareDetectorBase):
             if len(key_words[i + 1]) > max_len:
                 max_len = len(key_words[i + 1])
 
+        # Build table as string for logging
+        lines = []
         t_l = "+-" + ("-" * 8) + "-+-" + ("-" * max_len) + "-+-" + ("-" * max_len) + "-+"
-        print(t_l)
+        lines.append(t_l)
         msg = "| %%-8s | %%-%ds | %%-%ds |" % (max_len, max_len)
-        print(msg % ("CRC32", "Keyword #1", "Keyword #2"))
-        print(t_l)
+        lines.append(msg % ("CRC32", "Keyword #1", "Keyword #2"))
+        lines.append(t_l)
 
         msg = "| %%08X | %%-%ds | %%-%ds |" % (max_len, max_len)
         for n in t_word:
-            print(msg % (n[0], n[1], n[2]))
+            lines.append(msg % (n[0], n[1], n[2]))
 
-        print(t_l)
+        lines.append(t_l)
+        logger.debug("Macro keywords:\n%s", "\n".join(lines))
 
     def disinfect(self, filename, malware_id):
         """Disinfect malware.
@@ -889,7 +883,7 @@ class KavMain(MalwareDetectorBase):
                 k2security.safe_remove_file(filename, filename_dir)
                 return True
             except (IOError, OSError, k2security.SecurityError) as e:
-                logger.debug("Disinfect error for %s: %s", filename, e)
+                self.logger.debug("Disinfect error for %s: %s", filename, e)
                 return False
 
         # Create a temporary file for disinfection failure recovery
@@ -923,11 +917,11 @@ class KavMain(MalwareDetectorBase):
             return ret
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
             # Restore the temporary file on error
             with contextlib.suppress(Exception):
                 shutil.move(t_name, filename)
             return False
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
             return False

@@ -8,26 +8,14 @@ This plugin handles adware detection using certificate analysis and YARA rules.
 """
 
 import contextlib
-import io
-import logging
 import os
-import zlib
 
 from kicomav.plugins import cryptolib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
-
-try:
-    import yara
-
-    LOAD_YARA = True
-except ImportError:
-    LOAD_YARA = False
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
+from kicomav.kavcore.k2yara import YaraRuleLoader
 
 
 # -------------------------------------------------------------------------
@@ -114,8 +102,11 @@ class KavMain(MalwareDetectorBase):
             title="Adware Scan Engine",
             kmd_name="adware",
         )
-        self.sig_num_yara = 0
-        self.adware_gen = None
+        self.yara_loader = YaraRuleLoader(
+            rule_subpath="yara/adware",
+            fallback_prefix="Adware.YARA",
+            logger=self.logger,
+        )
 
     def _load_virus_database(self) -> int:
         """Load virus patterns.
@@ -123,28 +114,8 @@ class KavMain(MalwareDetectorBase):
         Returns:
             0 for success
         """
-        if not LOAD_YARA:
-            return 0
-
-        # Load Adware Yara rules
-        kicomav_paths = self._get_rule_path("kicomav")
-        if not kicomav_paths:
-            return 0
-
-        for kicomav_path in kicomav_paths:
-            with contextlib.suppress(Exception):
-                with open(os.path.join(kicomav_path, "adware.y01"), "rb") as fp:
-                    b = fp.read()
-                    if b[:4] == b"KAVS":
-                        t = zlib.decompress(b[12:])
-
-                        buff = io.BytesIO(t)
-                        self.adware_gen = yara.load(file=buff)
-
-                        # If the signature is loaded, get the number of signatures
-                        self.sig_num_yara = kavutil.get_uint32(b, 4)
-                        break  # Successfully loaded, stop searching
-
+        # Load Adware YARA rules from rules/yara/adware
+        self.yara_loader.load(self.rules_paths, verbose=self.verbose)
         return 0
 
     def getinfo(self):
@@ -157,7 +128,7 @@ class KavMain(MalwareDetectorBase):
         s_num = 0
         if kavutil.handle_pattern_md5:
             s_num = kavutil.handle_pattern_md5.get_sig_num("adware") * 2
-        s_num += self.sig_num_yara
+        s_num += self.yara_loader.rule_count
         info["sig_num"] = s_num
         return info
 
@@ -205,15 +176,15 @@ class KavMain(MalwareDetectorBase):
                     return ret
 
                 # Check for malware using rdata
-                if self.adware_gen:
+                if self.yara_loader.has_rules():
                     ret = self.__scan_rdata(filehandle, filename, fileformat, filename_ex)
                     if ret[0]:
                         return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -228,7 +199,7 @@ class KavMain(MalwareDetectorBase):
 
         if cert_off != 0 and cert_size != 0:
             if self.verbose:
-                print("-" * 79)
+                self.logger.info("-" * 79)
                 kavutil.vprint("Engine")
                 kavutil.vprint(None, "Engine", "adware")
 
@@ -300,9 +271,8 @@ class KavMain(MalwareDetectorBase):
             foff = section["PointerRawData"]
             fsize = section["SizeRawData"]
 
-            ret = self.adware_gen.match(data=mm[foff : foff + fsize])
-            if len(ret):
-                vname = ret[0].meta.get("KicomAV", ret[0].rule)
+            matched, vname, _ = self.yara_loader.match(mm[foff : foff + fsize])
+            if matched:
                 return True, vname, kernel.DISINFECT_DELETE, kernel.INFECTED
 
         return False, "", -1, kernel.NOT_FOUND
@@ -324,8 +294,8 @@ class KavMain(MalwareDetectorBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False

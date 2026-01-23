@@ -12,14 +12,9 @@ import contextlib
 import os
 import tempfile
 import shutil
-import logging
 
-from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase, TempPathMixin
 
 try:
     import rarfile
@@ -37,7 +32,7 @@ except ImportError:
 # -------------------------------------------------------------------------
 # class KavMain
 # -------------------------------------------------------------------------
-class KavMain(ArchivePluginBase):
+class KavMain(TempPathMixin, ArchivePluginBase):
     """RAR archive handler plugin.
 
     This plugin provides functionality for:
@@ -55,8 +50,6 @@ class KavMain(ArchivePluginBase):
             title="RAR Archive Engine",
             kmd_name="rar",
         )
-        self.temp_path = {}
-        self.root_temp_path = None
         self.password = None  # Password for encrypted archives
 
     def _custom_init(self) -> int:
@@ -67,11 +60,10 @@ class KavMain(ArchivePluginBase):
         """
         if not RARFILE_AVAILABLE:
             if self.verbose:
-                logger.info("rarfile package is not available")
+                self.logger.info("rarfile package is not available")
             return -1
 
-        pid = os.getpid()
-        self.root_temp_path = os.path.join(tempfile.gettempdir(), "ktmp_rar_%05x" % pid)
+        self._init_temp_paths("rar")
         return 0
 
     def _custom_uninit(self) -> int:
@@ -82,16 +74,6 @@ class KavMain(ArchivePluginBase):
         """
         self.arcclose()
         return 0
-
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        return info
 
     def __get_handle(self, filename, password=None):
         """Get or create handle for RAR file.
@@ -114,21 +96,17 @@ class KavMain(ArchivePluginBase):
             if password:
                 rar_file.setpassword(password)
             self.handle[filename] = rar_file
-
-            if self.root_temp_path and not os.path.exists(self.root_temp_path):
-                os.makedirs(self.root_temp_path, exist_ok=True)
-
-            self.temp_path[filename] = tempfile.mkdtemp(prefix="ktmp", dir=self.root_temp_path)
+            self._create_temp_dir(filename)
             return rar_file
 
         except rarfile.NotRarFile as e:
-            logger.debug("Not a RAR file %s: %s", filename, e)
+            self.logger.debug("Not a RAR file %s: %s", filename, e)
         except rarfile.BadRarFile as e:
-            logger.debug("Bad RAR file %s: %s", filename, e)
+            self.logger.debug("Bad RAR file %s: %s", filename, e)
         except (IOError, OSError) as e:
-            logger.debug("Failed to open RAR file %s: %s", filename, e)
+            self.logger.debug("Failed to open RAR file %s: %s", filename, e)
         except Exception as e:
-            logger.debug("Error opening RAR file %s: %s", filename, e)
+            self.logger.debug("Error opening RAR file %s: %s", filename, e)
 
         return None
 
@@ -170,13 +148,13 @@ class KavMain(ArchivePluginBase):
                 return {"ff_rar": fileformat}
 
         except rarfile.NotRarFile as e:
-            logger.debug("Not a RAR file %s: %s", filename, e)
+            self.logger.debug("Not a RAR file %s: %s", filename, e)
         except rarfile.BadRarFile as e:
-            logger.debug("Bad RAR file %s: %s", filename, e)
+            self.logger.debug("Bad RAR file %s: %s", filename, e)
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.debug("Format detection error for %s: %s", filename, e)
+            self.logger.debug("Format detection error for %s: %s", filename, e)
 
         return None
 
@@ -222,11 +200,11 @@ class KavMain(ArchivePluginBase):
                 file_scan_list.append(["arc_rar", fname])
 
         except rarfile.BadRarFile as e:
-            logger.debug("Bad RAR file %s: %s", filename, e)
+            self.logger.debug("Bad RAR file %s: %s", filename, e)
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.debug("Archive list error for %s: %s", filename, e)
+            self.logger.debug("Archive list error for %s: %s", filename, e)
 
         return file_scan_list
 
@@ -243,7 +221,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_rar":
@@ -261,16 +239,16 @@ class KavMain(ArchivePluginBase):
         except rarfile.PasswordRequired:
             pass  # Will try with password below
         except rarfile.NoRarEntry:
-            logger.debug("File %s not found in RAR archive", fname_in_arc)
+            self.logger.debug("File %s not found in RAR archive", fname_in_arc)
             return None
         except rarfile.BadRarFile as e:
-            logger.debug("Bad RAR file when extracting %s: %s", fname_in_arc, e)
+            self.logger.debug("Bad RAR file when extracting %s: %s", fname_in_arc, e)
             return None
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
             return None
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
             return None
 
         # Try 2: Extract with stored password
@@ -281,49 +259,24 @@ class KavMain(ArchivePluginBase):
                 if file_data:
                     return file_data
             except rarfile.PasswordRequired:
-                logger.debug("Wrong password for %s in RAR archive", fname_in_arc)
+                self.logger.debug("Wrong password for %s in RAR archive", fname_in_arc)
                 raise RuntimeError("password required")
             except rarfile.BadRarFile as e:
-                logger.debug("Bad RAR file when extracting %s with password: %s", fname_in_arc, e)
+                self.logger.debug("Bad RAR file when extracting %s with password: %s", fname_in_arc, e)
             except (IOError, OSError) as e:
-                logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+                self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
             except Exception as e:
-                logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+                self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
         else:
-            logger.debug("Password required for %s in RAR archive", fname_in_arc)
+            self.logger.debug("Password required for %s in RAR archive", fname_in_arc)
             raise RuntimeError("password required")
 
         return None
 
     def arcclose(self):
         """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                rar_file = self.handle.get(fname)
-                if rar_file:
-                    rar_file.close()
-
-                # Delete temporary directory
-                temp_path = self.temp_path.get(fname)
-                if temp_path and os.path.exists(temp_path):
-                    with contextlib.suppress(OSError):
-                        if os.path.isdir(temp_path):
-                            shutil.rmtree(temp_path)
-                        else:
-                            os.remove(temp_path)
-
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
-                self.temp_path.pop(fname, None)
-
-        # Delete root temporary directory
-        if self.root_temp_path and os.path.exists(self.root_temp_path):
-            with contextlib.suppress(OSError):
-                shutil.rmtree(self.root_temp_path)
+        super().arcclose()
+        self._cleanup_temp_paths()
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create a RAR archive.
@@ -360,7 +313,7 @@ class KavMain(ArchivePluginBase):
                     break
 
         if not rar_tool or not os.path.exists(rar_tool):
-            logger.debug("RAR tool not found, cannot create RAR archive")
+            self.logger.debug("RAR tool not found, cannot create RAR archive")
             return False
 
         try:
@@ -377,6 +330,11 @@ class KavMain(ArchivePluginBase):
                     a_name = file_info.get_filename_in_archive()
 
                     if os.path.exists(rname) and a_name:
+                        # CWE-78: Validate filename before use in subprocess
+                        if not k2security.is_safe_subprocess_filename(a_name):
+                            self.logger.warning("Skipping unsafe filename in RAR creation: %s", a_name)
+                            continue
+
                         # Copy the file to work_dir with the archive member name
                         dest_path = os.path.join(work_dir, a_name)
                         shutil.copy(rname, dest_path)
@@ -399,10 +357,10 @@ class KavMain(ArchivePluginBase):
                     shutil.rmtree(work_dir)
 
         except subprocess.TimeoutExpired:
-            logger.debug("RAR creation timed out for %s", arc_name)
+            self.logger.debug("RAR creation timed out for %s", arc_name)
         except (IOError, OSError) as e:
-            logger.debug("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.debug("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.debug("Archive creation error for %s: %s", arc_name, e)
+            self.logger.debug("Archive creation error for %s: %s", arc_name, e)
 
         return False

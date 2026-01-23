@@ -14,19 +14,13 @@ VHD files are commonly used by malware to bypass MOTW protection.
 """
 
 import struct
-import os
 import re
-import logging
 from enum import IntEnum
 from typing import Optional, Dict, Any, List, Tuple, BinaryIO
 from dataclasses import dataclass
 
-from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # VHD Constants
 VHD_SECTOR_SIZE = 512
@@ -199,10 +193,10 @@ class VHDHandle:
             return True
 
         except (IOError, OSError) as e:
-            logger.debug("Failed to open VHD file %s: %s", self.filename, e)
+            self.logger.debug("Failed to open VHD file %s: %s", self.filename, e)
             return False
         except Exception as e:
-            logger.debug("Failed to parse VHD file %s: %s", self.filename, e)
+            self.logger.debug("Failed to parse VHD file %s: %s", self.filename, e)
             return False
 
     def close(self):
@@ -238,7 +232,7 @@ class VHDHandle:
             return True
 
         except Exception as e:
-            logger.debug("Failed to read footer: %s", e)
+            self.logger.debug("Failed to read footer: %s", e)
             return False
 
     def _parse_footer(self, data: bytes) -> VHDFooter:
@@ -295,7 +289,7 @@ class VHDHandle:
             return True
 
         except Exception as e:
-            logger.debug("Failed to read dynamic header: %s", e)
+            self.logger.debug("Failed to read dynamic header: %s", e)
             return False
 
     def _read_bat(self) -> bool:
@@ -317,7 +311,7 @@ class VHDHandle:
             return True
 
         except Exception as e:
-            logger.debug("Failed to read BAT: %s", e)
+            self.logger.debug("Failed to read BAT: %s", e)
             return False
 
     def _read_sector(self, sector_num: int) -> bytes:
@@ -741,7 +735,7 @@ class VHDHandle:
                             "start_lba": start_lba,
                         }
             except Exception as e:
-                logger.debug("Failed to list files in partition: %s", e)
+                self.logger.debug("Failed to list files in partition: %s", e)
 
     @staticmethod
     def _sanitize_path(path: str) -> str:
@@ -769,7 +763,7 @@ class VHDHandle:
             return self._extract_file_data(start_lba, boot, entry)
 
         except Exception as e:
-            logger.debug("Failed to extract file %s: %s", filepath, e)
+            self.logger.debug("Failed to extract file %s: %s", filepath, e)
             return None
 
 
@@ -823,12 +817,6 @@ class KavMain(ArchivePluginBase):
         self.arcclose()
         return 0
 
-    def getinfo(self):
-        """Get plugin information."""
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        return info
-
     def __get_handle(self, filename: str) -> Optional[VHDHandle]:
         """Get or create handle for VHD file."""
         if filename in self.handle:
@@ -853,9 +841,9 @@ class KavMain(ArchivePluginBase):
                 return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -873,9 +861,9 @@ class KavMain(ArchivePluginBase):
                             file_scan_list.append(["arc_vhd", file_path])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -883,7 +871,7 @@ class KavMain(ArchivePluginBase):
         """Extract a file from the VHD image."""
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_vhd":
@@ -897,22 +885,8 @@ class KavMain(ArchivePluginBase):
             return vhd_handle.extract_file(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open VHD handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                vhd_handle = self.handle[fname]
-                if hasattr(vhd_handle, "close"):
-                    vhd_handle.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

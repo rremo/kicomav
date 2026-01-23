@@ -42,11 +42,36 @@ Advanced Usage:
     # Configuration access
     config = kicomav.get_config()
     print(config.rules_paths)
+
+Archive Exploration:
+    import kicomav
+
+    # List archive contents
+    with kicomav.Scanner() as scanner:
+        info, entries = scanner.list_archive("/path/to/archive.zip")
+        print(f"Format: {info.format_type}")
+        for entry in entries:
+            print(f"{'  '*entry.depth}{entry.path}")
+
+    # Extract archive
+    with kicomav.Scanner() as scanner:
+        result = scanner.extract_archive(
+            "/path/to/archive.zip",
+            "/output/folder"
+        )
+        print(f"Extracted {result.extracted_count} files")
+        print(f"Log file: {result.log_file}")
+
+    # Read file from archive into memory
+    with kicomav.Scanner() as scanner:
+        data = scanner.read_archive("/path/to/archive.zip", "config.json")
+        if data:
+            config = json.loads(data.decode('utf-8'))
 """
 
-__version__ = "0.40"
+__version__ = "0.41"
 __author__ = "Kei Choi"
-__last_update__ = "Wed Dec 31 03:50:27 2025 UTC"
+__last_update__ = "Thu Jan 23 00:00:00 2026 UTC"
 
 # Import from kavcore for public API
 from kicomav.kavcore import (
@@ -64,6 +89,16 @@ from kicomav.kavcore import (
     # Scanner (high-level API)
     ScanResult,
     Scanner,
+    # Archive API
+    ArchiveEntry,
+    ArchiveInfo,
+    ExtractionResult,
+    ArchiveError,
+    ArchiveNotFoundError,
+    ArchiveFormatError,
+    ArchivePasswordError,
+    ArchiveSecurityError,
+    ArchiveExtractionError,
     # Core modules
     k2const,
 )
@@ -87,6 +122,16 @@ __all__ = [
     # Scanner (recommended high-level API)
     "Scanner",
     "ScanResult",
+    # Archive API
+    "ArchiveEntry",
+    "ArchiveInfo",
+    "ExtractionResult",
+    "ArchiveError",
+    "ArchiveNotFoundError",
+    "ArchiveFormatError",
+    "ArchivePasswordError",
+    "ArchiveSecurityError",
+    "ArchiveExtractionError",
     # Core modules
     "k2const",
 ]

@@ -8,17 +8,13 @@ This plugin handles PDF format for scanning, malware detection, and extraction.
 """
 
 import contextlib
-import logging
 import os
 import re
 from pathlib import Path
 
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 
 # -------------------------------------------------------------------------
@@ -189,28 +185,8 @@ class KavMain(ArchivePluginBase):
         return ["Trojan.PDF.Generic"]
 
     def __get_handle(self, filename):
-        """Get or create handle for PDF file.
-
-        Args:
-            filename: Path to PDF file
-
-        Returns:
-            PdfFile object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = PdfFile(filename, self.verbose)
-            self.handle[filename] = zfile
-            return zfile
-
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open PDF file %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error opening PDF file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for PDF file."""
+        return self._get_or_create_handle(filename, PdfFile, self.verbose)
 
     def format(self, filehandle, filename, filename_ex):
         """Analyze and detect PDF format.
@@ -231,9 +207,9 @@ class KavMain(ArchivePluginBase):
                 return {"ff_pdf": "PDF"}
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -257,9 +233,9 @@ class KavMain(ArchivePluginBase):
                     return True, "Trojan.PDF.Generic", 0, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -281,9 +257,9 @@ class KavMain(ArchivePluginBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False
 
@@ -310,9 +286,9 @@ class KavMain(ArchivePluginBase):
             file_scan_list.extend(["arc_pdf", name] for name in zfile.namelist())
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -338,25 +314,11 @@ class KavMain(ArchivePluginBase):
             return zfile.read(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create an archive.

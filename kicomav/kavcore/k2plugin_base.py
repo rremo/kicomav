@@ -8,14 +8,18 @@ This module provides abstract base classes for all KICOMAV plugins,
 implementing common functionality and enforcing consistent interfaces.
 """
 
+import contextlib
 import os
 import logging
 import pathlib
+import secrets
+import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from enum import IntEnum
-from typing import Dict, Any, List, Optional, Tuple, BinaryIO, Union
+from typing import Dict, Any, List, Optional, Tuple, BinaryIO, Union, Callable
 
-# Module logger
+# Module logger (kept for backward compatibility with code that imports it)
 logger = logging.getLogger(__name__)
 
 from . import k2security
@@ -56,7 +60,13 @@ class PluginBase(ABC):
 
     This abstract base class provides common initialization, cleanup,
     and information retrieval functionality for all plugin types.
+
+    Attributes:
+        logger: Logger instance for the plugin (cached per class).
     """
+
+    # Cache logger instances per class to avoid repeated getLogger calls
+    _logger_cache: Dict[type, logging.Logger] = {}
 
     def __init__(self, author: str = "Kei Choi", version: str = "1.0", title: str = "", kmd_name: str = ""):
         """Initialize the plugin with metadata.
@@ -74,6 +84,21 @@ class PluginBase(ABC):
         self.verbose = False
         self.rules_paths = {}  # {"system": "/path", "user": "/path" or None}
         self._max_scan_size = DEFAULT_MAX_SCAN_SIZE
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Get logger for this plugin.
+
+        Returns a logger named after the plugin's module, cached for efficiency.
+        This eliminates the need for each plugin to create its own logger.
+
+        Returns:
+            Logger instance for the plugin's module
+        """
+        cls = self.__class__
+        if cls not in PluginBase._logger_cache:
+            PluginBase._logger_cache[cls] = logging.getLogger(cls.__module__)
+        return PluginBase._logger_cache[cls]
 
     def init(
         self,
@@ -198,13 +223,13 @@ class PluginBase(ABC):
 
         # Check for null bytes
         if "\0" in path:
-            logger.warning("Null byte detected in %s: %s", context, repr(path))
+            self.logger.warning("Null byte detected in %s: %s", context, repr(path))
             return False
 
         # Check for path traversal patterns
         path_parts = pathlib.Path(path).parts
         if ".." in path_parts:
-            logger.warning("Path traversal detected in %s: %s", context, path)
+            self.logger.warning("Path traversal detected in %s: %s", context, path)
             return False
 
         return True
@@ -257,6 +282,70 @@ class PluginBase(ABC):
         return (False, "", -1, "")
 
 
+class TempPathMixin:
+    """Mixin for plugins that need temporary directory management.
+
+    Provides common temp path initialization, creation, and cleanup.
+    Use with ArchivePluginBase for plugins that extract to temp directories.
+
+    Usage:
+        class KavMain(TempPathMixin, ArchivePluginBase):
+            def _custom_init(self):
+                self._init_temp_paths("rar")
+                return 0
+
+            def _custom_uninit(self):
+                self.arcclose()
+                return 0
+
+            def arcclose(self):
+                super().arcclose()
+                self._cleanup_temp_paths()
+    """
+
+    temp_path: Dict[str, str]
+    root_temp_path: Optional[str]
+
+    def _init_temp_paths(self, prefix: str) -> None:
+        """Initialize temp path tracking.
+
+        Args:
+            prefix: Prefix for temp directory name (e.g., 'rar', 'cab')
+        """
+        self.temp_path = {}
+        # CWE-377: Use cryptographically secure random name instead of PID
+        random_suffix = secrets.token_hex(8)  # 16 hex chars
+        self.root_temp_path = os.path.join(tempfile.gettempdir(), f"ktmp_{prefix}_{random_suffix}")
+
+    def _create_temp_dir(self, filename: str) -> str:
+        """Create temp directory for a file.
+
+        Args:
+            filename: Archive filename (used as key)
+
+        Returns:
+            Path to created temp directory
+        """
+        if self.root_temp_path and not os.path.exists(self.root_temp_path):
+            os.makedirs(self.root_temp_path, exist_ok=True)
+        temp_dir = tempfile.mkdtemp(prefix="ktmp", dir=self.root_temp_path)
+        self.temp_path[filename] = temp_dir
+        return temp_dir
+
+    def _cleanup_temp_paths(self) -> None:
+        """Clean up all temporary directories."""
+        for fname in list(self.temp_path.keys()):
+            temp_dir = self.temp_path.get(fname)
+            if temp_dir and os.path.exists(temp_dir):
+                with contextlib.suppress(OSError):
+                    shutil.rmtree(temp_dir)
+            self.temp_path.pop(fname, None)
+
+        if self.root_temp_path and os.path.exists(self.root_temp_path):
+            with contextlib.suppress(OSError):
+                shutil.rmtree(self.root_temp_path)
+
+
 class ArchivePluginBase(PluginBase):
     """Base class for archive processing plugins.
 
@@ -268,12 +357,48 @@ class ArchivePluginBase(PluginBase):
        for complex multi-format plugins
     2. Implement helper methods (_get_signature, _parse_archive_format, etc.)
        for simple single-format plugins
+
+    Class Variables:
+        make_arc_type: Archive creation type (kernel.MASTER_PACK or kernel.MASTER_DELETE)
+                       Set in subclass to enable automatic getinfo() population.
+        engine_type: Engine type (kernel.ARCHIVE_ENGINE by default)
+                     Set in subclass to override engine type.
     """
+
+    # Subclass can override this for automatic getinfo() population
+    # None means the subclass handles it manually or doesn't support mkarc
+    make_arc_type: Optional[int] = None
+    # Subclass can override this to set different engine type
+    # None means use default (kernel.ARCHIVE_ENGINE)
+    engine_type: Optional[int] = None
 
     def __init__(self, *args, **kwargs):
         """Initialize archive plugin."""
         super().__init__(*args, **kwargs)
         self.handle = {}  # Dict for multi-format support: {filename: handle}
+
+    def getinfo(self) -> Dict[str, Any]:
+        """Get plugin information with archive engine type.
+
+        Automatically adds engine_type and make_arc_type if configured.
+
+        Returns:
+            Dictionary containing plugin metadata
+        """
+        # Import here to avoid circular import
+        from kicomav.plugins import kernel
+
+        info = super().getinfo()
+
+        if self.engine_type is not None:
+            info["engine_type"] = self.engine_type
+        else:
+            info["engine_type"] = 0
+
+        if self.make_arc_type is not None:
+            info["make_arc_type"] = self.make_arc_type
+
+        return info
 
     def format(self, filehandle: bytes, filename: str, filename_ex: str) -> Optional[Dict[str, Any]]:
         """Verify and parse archive format.
@@ -295,12 +420,12 @@ class ArchivePluginBase(PluginBase):
             if signature and len(mm) >= len(signature) and mm[: len(signature)] == signature:
                 return self._parse_archive_format(mm, filename, filename_ex)
         except (IOError, OSError) as e:
-            logger.debug("Archive format IO error for %s: %s", filename, e)
+            self.logger.debug("Archive format IO error for %s: %s", filename, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
         except (ValueError, TypeError) as e:
-            logger.debug("Archive format parse error for %s: %s", filename, e)
+            self.logger.debug("Archive format parse error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in archive format check for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in archive format check for %s: %s", filename, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
 
         return None
@@ -354,12 +479,12 @@ class ArchivePluginBase(PluginBase):
                     if file_info:
                         file_scan_list.append(file_info)
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
         except (ValueError, KeyError) as e:
-            logger.debug("Archive list parse error for %s: %s", filename, e)
+            self.logger.debug("Archive list parse error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
 
         return file_scan_list
@@ -419,18 +544,18 @@ class ArchivePluginBase(PluginBase):
         """
         # Validate archive member name for path traversal
         if not self._is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         try:
             return self._extract_file(arc_engine_id, arc_name, fname_in_arc)
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
         except (ValueError, KeyError, IndexError) as e:
-            logger.debug("Archive extract parse error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract parse error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
 
         return None
@@ -461,11 +586,42 @@ class ArchivePluginBase(PluginBase):
                 if hasattr(handle, "close"):
                     handle.close()
             except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
+                self.logger.debug("Archive close IO error for %s: %s", fname, e)
             except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
+                self.logger.debug("Archive close error for %s: %s", fname, e)
             finally:
                 self.handle.pop(fname, None)
+
+    def _get_or_create_handle(self, filename: str, creator_fn, *args, **kwargs):
+        """Get cached handle or create new one.
+
+        Helper method to reduce boilerplate in __get_handle implementations.
+
+        Args:
+            filename: File path (used as cache key)
+            creator_fn: Callable that creates handle (e.g., zipfile.ZipFile)
+            *args, **kwargs: Additional arguments passed to creator_fn
+
+        Returns:
+            Handle object or None on error
+
+        Example:
+            def __get_handle(self, filename):
+                return self._get_or_create_handle(filename, zipfile.ZipFile)
+        """
+        if filename in self.handle:
+            return self.handle[filename]
+
+        try:
+            handle = creator_fn(filename, *args, **kwargs)
+            self.handle[filename] = handle
+            return handle
+        except (IOError, OSError) as e:
+            self.logger.debug("Failed to open %s: %s", filename, e)
+        except Exception as e:
+            self.logger.debug("Error opening %s: %s", filename, e)
+
+        return None
 
     def _cleanup_resources(self):
         """Clean up archive-specific resources."""
@@ -488,12 +644,12 @@ class ArchivePluginBase(PluginBase):
         try:
             return self._create_archive(arc_engine_id, arc_name, file_infos)
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
         except (ValueError, TypeError) as e:
-            logger.error("Archive creation data error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation data error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
 
         return False
@@ -577,7 +733,7 @@ class MalwareDetectorBase(PluginBase):
                         file_size = filehandle.tell()
                         filehandle.seek(current_pos)  # Restore position
                         if file_size > self._max_scan_size:
-                            logger.info(
+                            self.logger.info(
                                 "File %s truncated for scan: %d > %d bytes", filename, file_size, self._max_scan_size
                             )
                 else:
@@ -586,7 +742,9 @@ class MalwareDetectorBase(PluginBase):
                 mm = filehandle
                 # Apply size limit to bytes data
                 if self._max_scan_size > 0 and len(mm) > self._max_scan_size:
-                    logger.info("Data %s truncated for scan: %d > %d bytes", filename, len(mm), self._max_scan_size)
+                    self.logger.info(
+                        "Data %s truncated for scan: %d > %d bytes", filename, len(mm), self._max_scan_size
+                    )
                     mm = mm[: self._max_scan_size]
 
             # Signature-based scanning
@@ -600,15 +758,15 @@ class MalwareDetectorBase(PluginBase):
                 return True, "Heuristic.Suspicious", THREAT_ID_DETECTED, self.kmd_name
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
         except (ValueError, TypeError) as e:
-            logger.debug("Scan data error for %s: %s", filename, e)
+            self.logger.debug("Scan data error for %s: %s", filename, e)
         except MemoryError as e:
-            logger.error("Scan memory error for %s (file too large?): %s", filename, e)
+            self.logger.error("Scan memory error for %s (file too large?): %s", filename, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
             raise k2const.PluginUnexpectedError(str(e)) from e
 
         return SCAN_RESULT_CLEAN
@@ -750,5 +908,171 @@ class FileFormatPluginBase(PluginBase):
         # Validate filename for path traversal
         if not self._validate_path_input(filename, "repair_filename"):
             return False
+
+        return False
+
+
+class SingleStreamArchiveBase(ArchivePluginBase):
+    """Base class for single-stream compression formats (gz, bz2, xz).
+
+    Single-stream archives contain exactly one compressed stream without
+    internal file structure. Examples: gzip, bzip2, xz/lzma.
+
+    Subclasses must define:
+        - format_key: Format identifier key (e.g., "ff_gz")
+        - engine_id: Archive engine ID (e.g., "arc_gz")
+        - signature: File signature bytes for format detection
+        - _open_stream(): Method to open the compressed stream
+    """
+
+    # Subclass must override these
+    format_key: str = ""  # e.g., "ff_gz", "ff_bz2", "ff_xz"
+    engine_id: str = ""  # e.g., "arc_gz", "arc_bz2", "arc_xz"
+    signature: bytes = b""  # File signature for detection
+    signature_offset: int = 0  # Offset where signature starts
+
+    # Single-stream archives always support MASTER_PACK (kernel.MASTER_PACK = 1)
+    make_arc_type: int = 1
+
+    def __init__(self, *args, **kwargs):
+        """Initialize single-stream archive plugin."""
+        super().__init__(*args, **kwargs)
+
+    @abstractmethod
+    def _open_stream(self, filename: str, mode: str):
+        """Open compressed stream as context manager.
+
+        Args:
+            filename: Path to archive file
+            mode: Open mode ("rb" for read, "wb" for write)
+
+        Returns:
+            File-like object (context manager)
+        """
+        pass
+
+    def _detect_format(self, filehandle: bytes, filename: str) -> Optional[str]:
+        """Detect format and return inner filename.
+
+        Override in subclasses for custom detection logic.
+        Default implementation checks signature and returns filename~.
+
+        Args:
+            filehandle: File data
+            filename: Original filename
+
+        Returns:
+            Inner filename or None if not recognized
+        """
+        if self.signature:
+            sig_len = len(self.signature)
+            offset = self.signature_offset
+            if len(filehandle) >= offset + sig_len:
+                if filehandle[offset : offset + sig_len] == self.signature:
+                    return f"{filename}~"
+        return None
+
+    def format(self, filehandle: bytes, filename: str, filename_ex: str) -> Optional[Dict[str, Any]]:
+        """Analyze and detect archive format.
+
+        Args:
+            filehandle: File data (memory mapped)
+            filename: Path to archive file
+            filename_ex: Extended filename info
+
+        Returns:
+            Dictionary with format info, or None if not recognized
+        """
+        try:
+            inner_name = self._detect_format(filehandle, filename)
+            if inner_name is not None:
+                return {self.format_key: inner_name}
+        except (IOError, OSError) as e:
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
+        except Exception as e:
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+
+        return None
+
+    def arclist(self, filename: str, fileformat: Dict[str, Any], password: Optional[str] = None) -> List[Any]:
+        """List files in the archive.
+
+        Single-stream archives contain exactly one file.
+
+        Args:
+            filename: Path to archive file
+            fileformat: Format info from format() method
+            password: Optional password (not used for single-stream)
+
+        Returns:
+            List containing single [engine_id, inner_filename] pair
+        """
+        file_scan_list = []
+
+        if self.format_key in fileformat:
+            inner_name = fileformat[self.format_key]
+            file_scan_list.append([self.engine_id, inner_name])
+
+        return file_scan_list
+
+    def unarc(self, arc_engine_id: str, arc_name: str, fname_in_arc: str) -> Optional[bytes]:
+        """Extract the compressed content.
+
+        Args:
+            arc_engine_id: Engine ID (must match self.engine_id)
+            arc_name: Path to archive file
+            fname_in_arc: Name of file to extract (ignored for single-stream)
+
+        Returns:
+            Decompressed file data, or None on error
+        """
+        if arc_engine_id != self.engine_id:
+            return None
+
+        try:
+            with self._open_stream(arc_name, "rb") as f:
+                return f.read()
+        except (IOError, OSError) as e:
+            self.logger.debug("Archive extract IO error for %s: %s", arc_name, e)
+        except Exception as e:
+            self.logger.warning("Unexpected error extracting from %s: %s", arc_name, e)
+
+        return None
+
+    def mkarc(self, arc_engine_id: str, arc_name: str, file_infos: List[Any]) -> bool:
+        """Create a compressed archive.
+
+        Single-stream archives can only contain one file.
+
+        Args:
+            arc_engine_id: Engine ID (must match self.engine_id)
+            arc_name: Path for new archive
+            file_infos: List of file info (only first is used)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if arc_engine_id != self.engine_id:
+            return False
+
+        if not file_infos:
+            return False
+
+        try:
+            file_info = file_infos[0]
+            source_name = file_info.get_filename()
+
+            with open(source_name, "rb") as src:
+                data = src.read()
+
+            with self._open_stream(arc_name, "wb") as dst:
+                dst.write(data)
+
+            return True
+
+        except (IOError, OSError) as e:
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
+        except Exception as e:
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False

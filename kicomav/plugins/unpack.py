@@ -8,7 +8,6 @@ This plugin handles various unpacking formats (ZLIB, Embed OLE) for scanning and
 """
 
 import contextlib
-import logging
 import os
 import struct
 import zlib
@@ -16,10 +15,7 @@ import zlib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 
 # -------------------------------------------------------------------------
@@ -84,9 +80,9 @@ class KavMain(ArchivePluginBase):
                     ret["ff_embed_ole"] = "EMBED_OLE"
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return ret if len(ret) else None
 
@@ -113,7 +109,7 @@ class KavMain(ArchivePluginBase):
                 file_scan_list.append(["arc_embed_ole", "<Embed>"])
 
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -144,15 +140,11 @@ class KavMain(ArchivePluginBase):
                     return buf[4:]
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        pass  # No persistent handles to close
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create an archive.
@@ -198,8 +190,8 @@ class KavMain(ArchivePluginBase):
                         return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False

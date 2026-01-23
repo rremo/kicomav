@@ -11,17 +11,13 @@ Supports:
 """
 
 import struct
-import logging
 from typing import Optional, Dict, Any, List, Generator
 from dataclasses import dataclass
 from datetime import datetime
 
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # ISO 9660 constants
 SECTOR_SIZE = 2048
@@ -107,7 +103,7 @@ class ISO9660Handle:
             self._parse_volume_descriptors()
             return True
         except (IOError, OSError, ValueError) as e:
-            logger.debug("Failed to open ISO file %s: %s", self.filename, e)
+            self.logger.debug("Failed to open ISO file %s: %s", self.filename, e)
             if self.fp:
                 self.fp.close()
                 self.fp = None
@@ -445,6 +441,9 @@ class KavMain(ArchivePluginBase):
     - Extracting files from ISO images
     """
 
+    # Set engine type to ARCHIVE_ENGINE
+    engine_type = kernel.ARCHIVE_ENGINE
+
     def __init__(self):
         """Initialize the ISO plugin."""
         super().__init__(
@@ -470,16 +469,6 @@ class KavMain(ArchivePluginBase):
         """
         self.arcclose()
         return 0
-
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        return info
 
     def __get_handle(self, filename: str) -> Optional[ISO9660Handle]:
         """Get or create handle for ISO file.
@@ -526,9 +515,9 @@ class KavMain(ArchivePluginBase):
                     return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -555,9 +544,9 @@ class KavMain(ArchivePluginBase):
                             file_scan_list.append(["arc_iso", record.file_identifier])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -574,7 +563,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_iso":
@@ -588,22 +577,8 @@ class KavMain(ArchivePluginBase):
             return iso_handle.extract_file(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open ISO handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                iso_handle = self.handle[fname]
-                if hasattr(iso_handle, "close"):
-                    iso_handle.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

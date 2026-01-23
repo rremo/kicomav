@@ -8,10 +8,10 @@ This module provides the core functionality for KicomAV antivirus engine.
 """
 
 # Configuration management
-from .config import Config, get_config, init, reload_config
+from .k2config import Config, get_config, init, reload_config
 
 # Update functionality
-from .updater import (
+from .k2updater import (
     UpdateResult,
     check_package_update,
     get_installed_version,
@@ -26,7 +26,20 @@ from .updater import (
 from .k2engine import Engine, EngineInstance
 
 # Scanner (high-level API)
-from .scanner import ScanResult, Scanner
+from .k2scanner import (
+    ScanResult,
+    Scanner,
+    # Archive API
+    ArchiveEntry,
+    ArchiveInfo,
+    ExtractionResult,
+    ArchiveError,
+    ArchiveNotFoundError,
+    ArchiveFormatError,
+    ArchivePasswordError,
+    ArchiveSecurityError,
+    ArchiveExtractionError,
+)
 
 # Core modules
 from . import k2const, k2file, k2security, k2timelib
@@ -52,6 +65,16 @@ __all__ = [
     # Scanner
     "Scanner",
     "ScanResult",
+    # Archive API
+    "ArchiveEntry",
+    "ArchiveInfo",
+    "ExtractionResult",
+    "ArchiveError",
+    "ArchiveNotFoundError",
+    "ArchiveFormatError",
+    "ArchivePasswordError",
+    "ArchiveSecurityError",
+    "ArchiveExtractionError",
     # Core modules
     "k2const",
     "k2file",

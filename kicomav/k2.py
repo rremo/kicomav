@@ -18,6 +18,7 @@ if _project_root not in sys.path:
 import contextlib
 import glob
 import hashlib
+import logging
 import time
 import struct
 import datetime
@@ -29,7 +30,7 @@ from rich.console import Console
 from rich.text import Text
 import requests
 
-# Configuration is automatically loaded by kavcore.config module
+# Configuration is automatically loaded by kavcore.k2config module
 # when it is imported. The .env file is loaded from ~/.kicomav/.env
 
 # Support both installed package and development mode
@@ -39,12 +40,12 @@ from kicomav import kavcore
 from kicomav.kavcore import k2engine as kavcore_k2engine
 from kicomav.kavcore import k2const as kavcore_k2const
 from kicomav.kavcore import k2security
-from kicomav.kavcore import updater as kavcore_updater
+from kicomav.kavcore import k2updater as kavcore_updater
 
 # Alias for compatibility
 kavcore.k2engine = kavcore_k2engine
 kavcore.k2const = kavcore_k2const
-kavcore.updater = kavcore_updater
+kavcore.k2updater = kavcore_updater
 
 # -------------------------------------------------------------------------
 # Main constants
@@ -58,6 +59,7 @@ g_options = None  # Options
 g_delta_time = None  # Scan time
 display_scan_result = {"Prev": {}, "Next": {}}  # Structure to prevent duplicate output
 display_update_result = ""  # Structure to display compression results
+g_report_results = []  # List to collect scan results for report generation
 
 PLUGIN_ERROR = False  # Variable used to format output nicely when plugin engine loading fails
 
@@ -235,6 +237,16 @@ def define_options():
     parser.add_option("", "--password", metavar="PWD", dest="opt_password")
     parser.add_option("", "--parallel", action="store_true", dest="opt_parallel", default=False)
     parser.add_option("", "--workers", metavar="N", type="int", dest="opt_workers", default=0)
+    parser.add_option("", "--report", metavar="FORMAT", dest="opt_report")
+    parser.add_option("", "--exclude", action="append", metavar="PATTERN", dest="opt_exclude", default=[])
+    parser.add_option("", "--exclude-ext", metavar="EXT", dest="opt_exclude_ext")
+    parser.add_option("", "--max-size", metavar="SIZE", dest="opt_max_size")
+    parser.add_option("", "--ignore-file", metavar="FILE", dest="opt_ignore_file")
+    parser.add_option("", "--cache", action="store_true", dest="opt_cache", default=True)
+    parser.add_option("", "--no-cache", action="store_false", dest="opt_cache")
+    parser.add_option("", "--cache-clear", action="store_true", dest="opt_cache_clear", default=False)
+    parser.add_option("", "--cache-stats", action="store_true", dest="opt_cache_stats", default=False)
+    parser.add_option("", "--cache-expire", metavar="DAYS", type="int", dest="opt_cache_expire", default=7)
     parser.add_option("-?", "--help", action="store_true", dest="opt_help", default=False)
 
     return parser
@@ -294,6 +306,16 @@ def print_options():
              --password=PWD    set password for encrypted archives
              --parallel        enable parallel file scanning
              --workers=N       number of worker threads (default: CPU count)
+             --report=FORMAT   generate report (json, html)
+             --exclude=PATTERN exclude files matching pattern (can be repeated)
+             --exclude-ext=EXT exclude file extensions (comma-separated)
+             --max-size=SIZE   skip files larger than SIZE (e.g., 100MB)
+             --ignore-file=F   load exclusion rules from file
+             --cache           enable scan cache (default: on)
+             --no-cache        disable scan cache (force rescan)
+             --cache-clear     clear scan cache and exit
+             --cache-stats     show cache statistics and exit
+             --cache-expire=N  cache expiration in days (default: 7)
              --update          update
         -?,  --help            this help
                                * = default option"""
@@ -336,7 +358,7 @@ def check_kicomav_update():
     if installed_version != latest_version:
         cprint("[", STYLE_GREY)
         cprint("notice", STYLE_BRIGHT_BLUE)
-        cprint(f"] A new release of ", STYLE_GREY)
+        cprint("] A new release of ", STYLE_GREY)
         cprint("kicomav", STYLE_GREEN)
         cprint(" is available: ", STYLE_GREY)
         cprint(f"{installed_version}", STYLE_RED)
@@ -345,7 +367,7 @@ def check_kicomav_update():
 
         cprint("[", STYLE_GREY)
         cprint("notice", STYLE_BRIGHT_BLUE)
-        cprint(f"] To update, run: ", STYLE_GREY)
+        cprint("] To update, run: ", STYLE_GREY)
         cprint("pip install --upgrade kicomav\n\n", STYLE_GREEN)
         return False  # Update required
 
@@ -370,8 +392,8 @@ def get_signature_download_list(url, rules_path):
         download_file(url, "update.cfg", rules_path)
 
         buf = open(temp_cfg_path, "r").read()
-        # Format: [sha1] [filepath]
-        p_lists = re.compile(r"([A-Fa-f0-9]{40}) (.+)")
+        # Format: [sha256] [filepath] - CWE-327: Use SHA-256 for secure verification
+        p_lists = re.compile(r"([A-Fa-f0-9]{64}) (.+)")
         lines = p_lists.findall(buf)
 
         for line in lines:
@@ -413,15 +435,15 @@ def get_signature_download_list(url, rules_path):
 # -------------------------------------------------------------------------
 def get_local_files(rules_path):
     local_files = set()
-    for filepath in glob.glob(os.path.join(rules_path, "**", "*"), recursive=True):
-        # Skip directories
-        if os.path.isdir(filepath):
-            continue
-        # Convert to relative path from rules_path
-        rel_path = os.path.relpath(filepath, rules_path)
-        # Normalize to forward slashes for comparison
-        rel_path = rel_path.replace("\\", "/")
-        local_files.add(rel_path)
+    # Use os.walk instead of glob.glob to include hidden files/folders
+    for root, dirs, files in os.walk(rules_path):
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            # Convert to relative path from rules_path
+            rel_path = os.path.relpath(filepath, rules_path)
+            # Normalize to forward slashes for comparison
+            rel_path = rel_path.replace("\\", "/")
+            local_files.add(rel_path)
     return local_files
 
 
@@ -611,7 +633,12 @@ def download_file(url, filename, path, gz=False, fnhook=None):
     if gz:
         data = gzip.open(pwd, "rb").read()
         fname = os.path.join(path, filename)
-        open(fname, "wb").write(data)
+        # Use safe write with size validation
+        try:
+            k2security.safe_write_file(fname, data)
+        except k2security.FileSizeError as e:
+            cprint(f" file too large: {e}\n", STYLE_RED)
+            return
         # Delete the gz file (CWE-73 safe deletion)
         base_path = os.path.join(path, subdir) if subdir else path
         with contextlib.suppress(k2security.SecurityError):
@@ -654,6 +681,10 @@ def download_file_k2(url, filename, path, gz=False, fnhook=None):
 
     if gz:
         data = gzip.open(pwd, "rb").read()
+        # Validate file size before writing
+        if len(data) > k2security.MAX_WRITE_SIZE:
+            cprint(f" file too large: {len(data)} bytes\n", STYLE_RED)
+            return None
         # Use mkstemp instead of mktemp to prevent race condition (CWE-377)
         fd, fname = tempfile.mkstemp(prefix="ktmp", suffix=".exe")
         try:
@@ -676,7 +707,8 @@ def chek_need_update(file, hash):
         with open(file, "rb") as fp:
             data = fp.read()
         # Compare the hash (case-insensitive comparison)
-        s = hashlib.sha1()
+        # CWE-327: Use SHA-256 for secure file integrity verification
+        s = hashlib.sha256()
         s.update(data)
         if s.hexdigest().lower() == hash.lower():
             return 0  # Not an update target
@@ -866,6 +898,7 @@ def truncate_filename_with_ellipsis(max_sizex, len_msg, filename, disp_width):
 def scan_callback(ret_value):
     global g_options
     global display_scan_result  # Structure to temporarily hold output
+    global g_report_results  # List to collect results for report
 
     from kicomav.plugins import kernel
 
@@ -902,6 +935,16 @@ def scan_callback(ret_value):
     else:
         message = "ok"
         message_color = STYLE_GREY_BOLD
+
+    # Collect results for report generation
+    if g_options.opt_report:
+        report_entry = {
+            "filepath": disp_name,
+            "status": "clean" if message == "ok" else ("infected" if ret_value["result"] else "error"),
+            "malware_name": ret_value.get("virus_name") if ret_value["result"] else None,
+            "error_message": ret_value.get("virus_name") if ret_value["scan_state"] == kernel.ERROR else None,
+        }
+        g_report_results.append(report_entry)
 
     # In normal cases, there is a possibility of duplication due to /<...> paths
     # Adjusted to prevent duplicate output
@@ -1129,6 +1172,75 @@ def print_result(result):
 
 
 # -------------------------------------------------------------------------
+# Cache management functions
+# -------------------------------------------------------------------------
+def handle_cache_clear():
+    """Handle --cache-clear option."""
+    from kicomav.kavcore.k2cache import ScanCache
+
+    cache = ScanCache()
+    count = cache.clear()
+    cache.vacuum()
+    cache.close()
+
+    cprint(f"\nCache cleared: {count} entries removed\n", STYLE_GREEN)
+    return 0
+
+
+def handle_cache_stats(expire_days):
+    """Handle --cache-stats option."""
+    from kicomav.kavcore.k2cache import ScanCache
+
+    cache = ScanCache(expire_days=expire_days)
+    stats = cache.get_stats()
+    cache.close()
+
+    print()
+    cprint("Scan Cache Statistics\n", STYLE_GREY_BOLD)
+    cprint("=" * 40 + "\n", STYLE_GREY)
+    cprint(f"Cache file:       {stats['cache_path']}\n", STYLE_GREY)
+    cprint(f"Cache size:       {stats['cache_size_str']}\n", STYLE_GREY)
+    cprint(f"Total entries:    {stats['total_entries']}\n", STYLE_GREY)
+    cprint(f"  Clean files:    {stats['clean_files']}\n", STYLE_GREEN)
+    cprint(f"  Infected files: {stats['infected_files']}\n", STYLE_RED)
+    cprint(f"  Error files:    {stats['error_files']}\n", STYLE_CYAN)
+    cprint(f"Expired entries:  {stats['expired_entries']}\n", STYLE_GREY)
+    cprint(f"Expire setting:   {stats['expire_days']} days\n", STYLE_GREY)
+    if stats["oldest_entry"]:
+        cprint(f"Oldest entry:     {stats['oldest_entry']}\n", STYLE_GREY)
+    if stats["newest_entry"]:
+        cprint(f"Newest entry:     {stats['newest_entry']}\n", STYLE_GREY)
+    print()
+    return 0
+
+
+def setup_scan_cache(kav):
+    """Setup scan cache based on command line options.
+
+    Args:
+        kav: Engine instance
+
+    Returns:
+        ScanCache object or None if cache is disabled
+    """
+    global g_options
+
+    if not g_options.opt_cache:
+        return None
+
+    from kicomav.kavcore.k2cache import ScanCache
+
+    cache = ScanCache(expire_days=g_options.opt_cache_expire)
+
+    # Prune expired entries on startup
+    pruned = cache.prune_expired()
+    if pruned > 0 and g_options.opt_verbose:
+        cprint(f"Pruned {pruned} expired cache entries\n", STYLE_GREY)
+
+    return cache
+
+
+# -------------------------------------------------------------------------
 # main()
 # -------------------------------------------------------------------------
 def main():
@@ -1153,6 +1265,17 @@ def main():
         print_usage()
         print(f"Error: {args}")
         return 0
+
+    # Configure logging for verbose output
+    if options.opt_verbose:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    # Handle cache management options
+    if options.opt_cache_clear:
+        return handle_cache_clear()
+
+    if options.opt_cache_stats:
+        return handle_cache_stats(options.opt_cache_expire)
 
     # Program's running folder (use __file__ to get actual module location)
     k2_pwd = os.path.dirname(os.path.abspath(__file__))
@@ -1233,11 +1356,77 @@ def main():
     kav.uninit()
 
 
+def setup_exclusion_rules(args):
+    """Setup exclusion rules from command line options and ignore file.
+
+    Args:
+        args: List of scan paths
+
+    Returns:
+        ExclusionRule object or None
+    """
+    global g_options
+
+    from kicomav.kavcore.k2exclude import ExclusionRule, find_ignore_file
+
+    rule = ExclusionRule()
+
+    # Load from ignore file (--ignore-file option or auto-detect .kicomav-ignore)
+    ignore_file = g_options.opt_ignore_file
+    if not ignore_file and args:
+        # Auto-detect .kicomav-ignore from scan path
+        ignore_file = find_ignore_file(args[0])
+
+    if ignore_file:
+        if rule.load_from_file(ignore_file):
+            if g_options.opt_verbose:
+                cprint(f"Loaded exclusion rules from: {ignore_file}\n", STYLE_GREY)
+
+    # Add patterns from --exclude options
+    if g_options.opt_exclude:
+        rule.add_patterns(g_options.opt_exclude)
+
+    # Add extensions from --exclude-ext option (comma-separated)
+    if g_options.opt_exclude_ext:
+        extensions = [ext.strip() for ext in g_options.opt_exclude_ext.split(",")]
+        rule.add_extensions(extensions)
+
+    # Set max size from --max-size option
+    if g_options.opt_max_size:
+        if not rule.set_max_size(g_options.opt_max_size):
+            print_error(f"Invalid size format: {g_options.opt_max_size}")
+
+    return rule
+
+
 def scan_paths_and_print_result(kav, args, k2_engine=None):
     """Scan the given paths and print the results"""
     global g_options
 
     kav.set_result()  # Initialize malware scan results
+
+    # Setup exclusion rules
+    exclusion_rule = setup_exclusion_rules(args)
+    if exclusion_rule and not exclusion_rule.is_empty():
+        kav.set_exclusion_rule(exclusion_rule)
+        summary = exclusion_rule.get_summary()
+        if g_options.opt_verbose:
+            cprint(f"Exclusion rules: {summary['patterns']} patterns, ", STYLE_GREY)
+            cprint(f"{len(summary['extensions'])} extensions", STYLE_GREY)
+            if summary["max_size_str"]:
+                cprint(f", max size: {summary['max_size_str']}", STYLE_GREY)
+            cprint("\n\n", STYLE_GREY)
+
+    # Setup scan cache
+    scan_cache = setup_scan_cache(kav)
+    if scan_cache:
+        # Get signature version for cache validation
+        sig_version = str(kav.get_version())
+        kav.set_scan_cache(scan_cache, sig_version)
+        if g_options.opt_verbose:
+            stats = scan_cache.get_stats()
+            cprint(f"Scan cache: {stats['total_entries']} entries", STYLE_GREY)
+            cprint(f" (expires in {g_options.opt_cache_expire} days)\n\n", STYLE_GREY)
 
     # Check scan start time
     start_time = datetime.datetime.now()
@@ -1248,42 +1437,61 @@ def scan_paths_and_print_result(kav, args, k2_engine=None):
 
     interrupted = False
 
-    # Scan paths (supports multiple paths)
+    # Scan paths (supports multiple paths and wildcards)
     try:
-        for scan_path in args:  # First argument excluding options is the target
-            scan_path = os.path.abspath(scan_path)
-
-            if os.path.exists(scan_path):  # Does the folder or file exist?
-                if use_parallel and k2_engine:
-                    # Parallel scanning mode
-                    status_msg = f"Parallel scanning ({max_workers} workers)..."
-                    with console.status(status_msg, spinner="dots"):
-                        ret = kav.scan_parallel(
-                            scan_path,
-                            max_workers,
-                            k2_engine,
-                            scan_callback,
-                            disinfect_callback,
-                            update_callback,
-                            quarantine_callback,
-                        )
-                        if ret == 1:  # Interrupted
-                            interrupted = True
-                            break
-                else:
-                    # Sequential scanning mode (default)
-                    with console.status("Scanning...", spinner="dots"):
-                        kav.scan(
-                            scan_path,
-                            scan_callback,
-                            disinfect_callback,
-                            update_callback,
-                            quarantine_callback,
-                        )
+        for scan_pattern in args:  # First argument excluding options is the target
+            # Expand wildcards using glob
+            if "*" in scan_pattern or "?" in scan_pattern:
+                expanded_paths = glob.glob(scan_pattern)
+                if not expanded_paths:
+                    print_display_scan_result(None, None, None)
+                    print_error(f"No files matched pattern: '{scan_pattern}'")
+                    continue
             else:
-                # Print results not displayed
-                print_display_scan_result(None, None, None)
-                print_error(f"Invalid path: '{scan_path}'")
+                expanded_paths = [scan_pattern]
+
+            for scan_path in expanded_paths:
+                scan_path = os.path.abspath(scan_path)
+
+                if os.path.exists(scan_path):  # Does the folder or file exist?
+                    if use_parallel and k2_engine:
+                        # Warn if sigtool is used with parallel mode
+                        if g_options.opt_sigtool:
+                            cprint("Warning: ", STYLE_RED)
+                            cprint(
+                                "--sigtool is not supported in parallel mode. Use sequential mode instead.\n\n",
+                                STYLE_GREY,
+                            )
+
+                        # Parallel scanning mode
+                        status_msg = f"Parallel scanning ({max_workers} workers)..."
+                        with console.status(status_msg, spinner="dots"):
+                            ret = kav.scan_parallel(
+                                scan_path,
+                                max_workers,
+                                k2_engine,
+                                scan_callback,
+                                disinfect_callback,
+                                update_callback,
+                                quarantine_callback,
+                            )
+                            if ret == 1:  # Interrupted
+                                interrupted = True
+                                break
+                    else:
+                        # Sequential scanning mode (default)
+                        with console.status("Scanning...", spinner="dots"):
+                            kav.scan(
+                                scan_path,
+                                scan_callback,
+                                disinfect_callback,
+                                update_callback,
+                                quarantine_callback,
+                            )
+                else:
+                    # Print results not displayed
+                    print_display_scan_result(None, None, None)
+                    print_error(f"Invalid path: '{scan_path}'")
     except KeyboardInterrupt:
         interrupted = True
 
@@ -1302,8 +1510,53 @@ def scan_paths_and_print_result(kav, args, k2_engine=None):
         print_display_scan_result(None, None, None)
         ret = kav.get_result()
         print_result(ret)
+
+        # Generate report if requested
+        if g_options.opt_report:
+            generate_report(args, kav, g_delta_time)
     finally:
         signal.signal(signal.SIGINT, original_handler)  # Restore handler
+
+
+def generate_report(args, kav, delta_time):
+    """Generate scan report in the specified format."""
+    global g_options
+    global g_report_results
+
+    from kicomav.report import ReportGenerator, create_summary_from_results
+
+    report_format = g_options.opt_report.lower()
+    if report_format not in ("json", "html"):
+        print_error(f"Unsupported report format: {report_format}. Use 'json' or 'html'.")
+        return
+
+    # Get scan information
+    scan_path = ", ".join(args) if args else "Unknown"
+    total_time_ms = int(delta_time.total_seconds() * 1000)
+
+    # Get version info from engine
+    sig_date = kav.get_version()
+    sig_count = kav.get_signum()
+
+    # Create summary
+    summary = create_summary_from_results(
+        scan_path=scan_path,
+        results=g_report_results,
+        kicomav_version=KAV_VERSION,
+        signature_count=sig_count,
+        signature_date=str(sig_date.ctime()) if sig_date else "",
+        total_scan_time_ms=total_time_ms,
+    )
+
+    # Generate report
+    generator = ReportGenerator()
+    if report_format == "json":
+        report = generator.to_json(summary)
+    else:
+        report = generator.to_html(summary)
+
+    # Output to stdout
+    print(report)
 
 
 def print_usage_and_options():

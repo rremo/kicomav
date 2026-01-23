@@ -397,7 +397,7 @@ def safe_download_file(
         else:
             urllib.request.urlretrieve(url, safe_dest)
     except Exception as e:
-        raise SecurityError(f"failed")
+        raise SecurityError("failed")
 
     return safe_dest
 
@@ -461,3 +461,350 @@ def validate_download_filename(filename: str) -> str:
         raise SecurityError(f"Reserved filename: {filename}")
 
     return filename
+
+
+# -------------------------------------------------------------------------
+# Secure Marshal Deserialization (CWE-502)
+# -------------------------------------------------------------------------
+import hmac
+import logging
+import marshal
+import zlib
+
+_security_logger = logging.getLogger(__name__)
+
+# KAVS file format constants
+KAVS_MAGIC = b"KAVS"
+KAVS_MAGIC_V2 = b"KAV2"  # New format with HMAC
+KAVS_HMAC_SIZE = 32  # SHA-256 HMAC
+
+# Maximum sizes for safety
+MAX_SIGNATURE_FILE_SIZE = 50 * 1024 * 1024  # 50MB max for signature files
+MAX_TOC_SIZE = 10 * 1024 * 1024  # 10MB max for PYZ TOC
+
+
+class MarshalSecurityError(SecurityError):
+    """Exception for marshal deserialization security errors."""
+
+    pass
+
+
+def safe_marshal_load_kavs(
+    data: bytes,
+    hmac_key: bytes = None,
+    allow_unsigned: bool = True,
+) -> any:
+    """
+    Securely load KAVS signature file data with integrity verification.
+
+    Supports two formats:
+    - KAVS (legacy): 4-byte magic + 8-byte metadata + zlib(marshal data)
+    - KAV2 (secure): 4-byte magic + 32-byte HMAC + zlib(marshal data)
+
+    Args:
+        data: Raw file data
+        hmac_key: HMAC key for signature verification (required for KAV2)
+        allow_unsigned: Allow loading unsigned KAVS files (with warning)
+
+    Returns:
+        Deserialized Python object
+
+    Raises:
+        MarshalSecurityError: If verification fails or data is invalid
+    """
+    if not data:
+        raise MarshalSecurityError("Empty data")
+
+    if len(data) > MAX_SIGNATURE_FILE_SIZE:
+        raise MarshalSecurityError(f"Signature file too large: {len(data)} bytes")
+
+    magic = data[:4]
+
+    # New secure format (KAV2)
+    if magic == KAVS_MAGIC_V2:
+        if hmac_key is None:
+            raise MarshalSecurityError("HMAC key required for KAV2 format")
+
+        if len(data) < 4 + KAVS_HMAC_SIZE + 1:
+            raise MarshalSecurityError("KAV2 file too short")
+
+        file_hmac = data[4 : 4 + KAVS_HMAC_SIZE]
+        compressed_data = data[4 + KAVS_HMAC_SIZE :]
+
+        # Verify HMAC
+        expected_hmac = hmac.new(hmac_key, compressed_data, hashlib.sha256).digest()
+        if not hmac.compare_digest(file_hmac, expected_hmac):
+            raise MarshalSecurityError("HMAC verification failed - file may be tampered")
+
+        try:
+            decompressed = zlib.decompress(compressed_data)
+            return marshal.loads(decompressed)
+        except (zlib.error, ValueError) as e:
+            raise MarshalSecurityError(f"Decompression/unmarshal failed: {e}")
+
+    # Legacy format (KAVS)
+    elif magic == KAVS_MAGIC:
+        if not allow_unsigned:
+            raise MarshalSecurityError("Unsigned KAVS files not allowed")
+
+        if len(data) < 13:  # 4 + 8 + at least 1 byte
+            raise MarshalSecurityError("KAVS file too short")
+
+        # Log warning for unsigned files
+        _security_logger.debug("Loading unsigned KAVS file (legacy format)")
+
+        try:
+            # KAVS format: 4-byte magic + 8-byte metadata + compressed data
+            compressed_data = data[12:]
+            decompressed = zlib.decompress(compressed_data)
+            return marshal.loads(decompressed)
+        except (zlib.error, ValueError) as e:
+            raise MarshalSecurityError(f"Decompression/unmarshal failed: {e}")
+
+    else:
+        raise MarshalSecurityError(f"Unknown file format: {magic!r}")
+
+
+def safe_marshal_load_toc(data: bytes, max_entries: int = 100000) -> any:
+    """
+    Securely load PYZ TOC (Table of Contents) data with type validation.
+
+    This is used for parsing potentially untrusted PYZ archives during scanning.
+    Only allows safe types (list, dict, str, bytes, int, float, tuple).
+
+    Args:
+        data: Raw TOC data
+        max_entries: Maximum number of entries allowed
+
+    Returns:
+        Deserialized TOC (list or dict)
+
+    Raises:
+        MarshalSecurityError: If data is invalid or contains unsafe types
+    """
+    if not data:
+        raise MarshalSecurityError("Empty TOC data")
+
+    if len(data) > MAX_TOC_SIZE:
+        raise MarshalSecurityError(f"TOC too large: {len(data)} bytes")
+
+    try:
+        toc = marshal.loads(data)
+    except (ValueError, EOFError) as e:
+        raise MarshalSecurityError(f"Failed to unmarshal TOC: {e}")
+
+    # Validate result type
+    if not isinstance(toc, (list, dict)):
+        raise MarshalSecurityError(f"Invalid TOC type: {type(toc).__name__}")
+
+    # Validate entry count
+    entry_count = len(toc)
+    if entry_count > max_entries:
+        raise MarshalSecurityError(f"TOC has too many entries: {entry_count}")
+
+    # Validate contents don't contain code objects
+    _validate_toc_contents(toc, depth=0, max_depth=10)
+
+    return toc
+
+
+def _validate_toc_contents(obj: any, depth: int, max_depth: int) -> None:
+    """
+    Recursively validate TOC contents for unsafe types.
+
+    Args:
+        obj: Object to validate
+        depth: Current recursion depth
+        max_depth: Maximum allowed depth
+
+    Raises:
+        MarshalSecurityError: If unsafe type is found
+    """
+    if depth > max_depth:
+        raise MarshalSecurityError("TOC structure too deep")
+
+    # Safe primitive types
+    if obj is None or isinstance(obj, (str, bytes, int, float, bool)):
+        return
+
+    # Tuples are safe for TOC entries
+    if isinstance(obj, tuple):
+        for item in obj:
+            _validate_toc_contents(item, depth + 1, max_depth)
+        return
+
+    # Lists need validation
+    if isinstance(obj, list):
+        for item in obj:
+            _validate_toc_contents(item, depth + 1, max_depth)
+        return
+
+    # Dicts need validation
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            _validate_toc_contents(key, depth + 1, max_depth)
+            _validate_toc_contents(value, depth + 1, max_depth)
+        return
+
+    # Code objects are dangerous - reject
+    if type(obj).__name__ == "code":
+        raise MarshalSecurityError("Code object found in TOC - potential security risk")
+
+    # Reject any other types
+    raise MarshalSecurityError(f"Unsafe type in TOC: {type(obj).__name__}")
+
+
+# -------------------------------------------------------------------------
+# Subprocess Security Functions (CWE-78)
+# -------------------------------------------------------------------------
+def is_safe_subprocess_filename(filename: str) -> bool:
+    """
+    Validate filename for safe use in subprocess calls (CWE-78 prevention).
+
+    Even when using subprocess with list arguments (not shell=True),
+    this validation provides defense in depth against command injection.
+
+    Args:
+        filename: Filename to validate
+
+    Returns:
+        True if filename is safe for subprocess use, False otherwise
+    """
+    if not filename:
+        return False
+
+    # Check for null byte
+    if "\0" in filename:
+        return False
+
+    # Check for path traversal
+    if ".." in filename:
+        return False
+
+    # Check for absolute paths
+    if os.path.isabs(filename):
+        return False
+
+    # Check for shell metacharacters (defense in depth)
+    # Even with list-based subprocess, reject suspicious characters
+    shell_metacharacters = set(";|&`$><")
+    if any(c in filename for c in shell_metacharacters):
+        return False
+
+    return True
+
+
+# -------------------------------------------------------------------------
+# Decompression Bomb Protection
+# -------------------------------------------------------------------------
+# Maximum decompressed size (1GB)
+MAX_DECOMPRESS_SIZE = 1024 * 1024 * 1024
+
+# Maximum compression ratio (100:1) - zip bombs often have 1000:1 or higher
+MAX_COMPRESSION_RATIO = 100
+
+
+class DecompressionBombError(SecurityError):
+    """Exception for decompression bomb detection."""
+
+    pass
+
+
+def safe_zlib_decompress(
+    data: bytes,
+    wbits: int = 15,
+    max_size: int = MAX_DECOMPRESS_SIZE,
+    max_ratio: int = MAX_COMPRESSION_RATIO,
+) -> bytes:
+    """
+    Safely decompress zlib data with bomb protection.
+
+    Prevents decompression bombs by checking:
+    1. Maximum decompressed size
+    2. Compression ratio (compressed vs decompressed size)
+
+    Args:
+        data: Compressed data
+        wbits: zlib window bits (default 15, use -15 for raw deflate)
+        max_size: Maximum allowed decompressed size in bytes
+        max_ratio: Maximum allowed compression ratio
+
+    Returns:
+        Decompressed data
+
+    Raises:
+        DecompressionBombError: If decompression limits exceeded
+    """
+    import zlib
+
+    compressed_size = len(data)
+
+    # Use incremental decompression to detect bombs early
+    decompressor = zlib.decompressobj(wbits)
+    chunks = []
+    total_size = 0
+
+    try:
+        # Decompress in chunks to monitor size growth
+        chunk = decompressor.decompress(data, max_length=max_size)
+        total_size += len(chunk)
+        chunks.append(chunk)
+
+        # Check for remaining data - if we've hit max_size and there's more, it exceeds limit
+        while decompressor.unconsumed_tail:
+            if total_size >= max_size:
+                raise DecompressionBombError(f"Decompressed size exceeds limit: {total_size} >= {max_size}")
+
+            remaining = max_size - total_size
+            chunk = decompressor.decompress(decompressor.unconsumed_tail, max_length=remaining)
+            total_size += len(chunk)
+            chunks.append(chunk)
+
+        # Check compression ratio
+        if compressed_size > 0:
+            ratio = total_size / compressed_size
+            if ratio > max_ratio:
+                raise DecompressionBombError(f"Suspicious compression ratio: {ratio:.1f}:1 > {max_ratio}:1")
+
+        return b"".join(chunks)
+
+    except zlib.error as e:
+        raise DecompressionBombError(f"Decompression error: {e}")
+
+
+# -------------------------------------------------------------------------
+# File Write Size Validation
+# -------------------------------------------------------------------------
+# Maximum file write size (100MB default for update files)
+MAX_WRITE_SIZE = 100 * 1024 * 1024
+
+
+class FileSizeError(SecurityError):
+    """Exception for file size validation errors."""
+
+    pass
+
+
+def safe_write_file(
+    path: str,
+    data: bytes,
+    max_size: int = MAX_WRITE_SIZE,
+) -> None:
+    """
+    Safely write data to file with size validation.
+
+    Prevents disk exhaustion by limiting maximum write size.
+
+    Args:
+        path: Path to write file
+        data: Data to write
+        max_size: Maximum allowed file size in bytes
+
+    Raises:
+        FileSizeError: If data exceeds maximum size
+    """
+    if len(data) > max_size:
+        raise FileSizeError(f"Data too large: {len(data)} bytes exceeds limit of {max_size} bytes")
+
+    with open(path, "wb") as f:
+        f.write(data)

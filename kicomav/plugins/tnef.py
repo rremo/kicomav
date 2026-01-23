@@ -13,18 +13,12 @@ Supports:
 """
 
 import struct
-import os
 import re
-import logging
 from enum import IntEnum
 from typing import Optional, Dict, Any, List
 
-from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # TNEF signature (little-endian)
 TNEF_SIGNATURE = 0x223E9F78
@@ -184,10 +178,10 @@ class TNEFHandle:
             with open(self.filename, "rb") as f:
                 return self._parse(f)
         except (IOError, OSError) as e:
-            logger.debug("Failed to open TNEF file %s: %s", self.filename, e)
+            self.logger.debug("Failed to open TNEF file %s: %s", self.filename, e)
             return False
         except Exception as e:
-            logger.debug("Failed to parse TNEF file %s: %s", self.filename, e)
+            self.logger.debug("Failed to parse TNEF file %s: %s", self.filename, e)
             return False
 
     def close(self):
@@ -574,16 +568,6 @@ class KavMain(ArchivePluginBase):
         self.arcclose()
         return 0
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        return info
-
     def __get_handle(self, filename: str) -> Optional[TNEFHandle]:
         """Get or create handle for TNEF file.
 
@@ -624,9 +608,9 @@ class KavMain(ArchivePluginBase):
                 return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -653,9 +637,9 @@ class KavMain(ArchivePluginBase):
                             file_scan_list.append(["arc_tnef", file_name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -672,7 +656,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_tnef":
@@ -686,22 +670,8 @@ class KavMain(ArchivePluginBase):
             return tnef_handle.extract_file(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open TNEF handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                tnef_handle = self.handle[fname]
-                if hasattr(tnef_handle, "close"):
-                    tnef_handle.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

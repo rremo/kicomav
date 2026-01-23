@@ -3,9 +3,12 @@
 
 
 import hashlib
+import logging
 import zlib
 from ctypes import c_ushort
 from kicomav.plugins import kernel
+
+logger = logging.getLogger(__name__)
 
 
 # -------------------------------------------------------------------------
@@ -13,6 +16,12 @@ from kicomav.plugins import kernel
 # Compute MD5 hash for given data
 # input  : data
 # return : hash value
+#
+# Security Note: MD5 is used here for malware signature matching (file
+# identification), not for cryptographic security. This is standard practice
+# in antivirus engines for compatibility with signature databases.
+# For security-critical operations (file integrity, authentication), use
+# sha256() instead.
 # -------------------------------------------------------------------------
 def md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
@@ -72,7 +81,7 @@ class CRC16(object):
 
             return crc_value
         except Exception as e:
-            print(f"EXCEPTION(calculate): {e}")
+            logger.error("CRC16 calculate error: %s", e)
 
     def init_crc16(self):
         """The algorithm uses tables with precalculated values"""

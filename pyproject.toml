@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kicomav"
-version = "0.40"
+version = "0.41"
 description = "KICOM Anti-Virus II - Open source antivirus engine for Python"
 readme = "README.md"
 license = {text = "MIT"}
@@ -42,15 +42,32 @@ dependencies = [
 full = [
     "pylzma>=0.5.0",
 ]
+daemon = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "python-multipart>=0.0.6",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "coverage>=7.0.0",
+    "ruff>=0.1.0",
+    "bandit[toml]>=1.7.0",
+    "safety>=2.3.0",
+    "mypy>=1.0.0",
+    "pre-commit>=3.0.0",
+    "httpx>=0.25.0",
+]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
 ]
 
 [project.scripts]
 k2 = "kicomav.k2:main"
+k2c = "kicomav.k2c:main"
+k2d = "kicomav.k2d:main"
 
 [project.urls]
 Homepage = "https://github.com/hanul93/kicomav"
@@ -69,6 +86,7 @@ include = ["kicomav*"]
 [tool.setuptools.package-data]
 "kicomav.plugins" = ["*.py", "kicom.lst"]
 "kicomav.kavcore" = ["*.py"]
+"kicomav.daemon" = ["*.py"]
 
 [tool.black]
 line-length = 120
@@ -79,3 +97,109 @@ testpaths = ["test"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Suppress log output during tests (only show ERROR and above)
+log_cli = true
+log_cli_level = "ERROR"
+log_level = "ERROR"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["kicomav"]
+omit = [
+    "kicomav/k2.py",
+    "kicomav/k2c.py",
+    "kicomav/k2d.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "E722",   # bare except (legacy code)
+    "F841",   # local variable assigned but never used
+    "E741",   # ambiguous variable name
+    "E402",   # module level import not at top of file
+    "F401",   # imported but unused (some are for re-export)
+    "F405",   # may be undefined from star imports (ctypes)
+    "F403",   # star import used
+    "E731",   # do not assign a lambda expression
+    "W293",   # blank line contains whitespace
+    "W291",   # trailing whitespace
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test/*" = ["B", "C4"]  # Relax rules for tests
+
+[tool.bandit]
+exclude_dirs = ["test", ".venv", "venv"]
+skips = [
+    "B101",   # assert_used (OK in production code for this project)
+    "B104",   # hardcoded_bind_all_interfaces (used in security blocklist)
+    "B110",   # try_except_pass (intentional for worker cleanup)
+    "B302",   # marshal (signature files, already secured in Phase 1)
+    "B310",   # urllib_urlopen (already validated by validate_url)
+    "B311",   # random (not used for security)
+    "B324",   # hashlib MD5/SHA1 (used for file identification, not security)
+    "B404",   # import_subprocess
+    "B406",   # xml_sax (required for HWPX parsing)
+    "B603",   # subprocess_without_shell_equals_true
+    "B607",   # start_process_with_partial_path
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false
+warn_unused_ignores = false
+ignore_missing_imports = true
+exclude = [
+    "test/",
+    "build/",
+    "dist/",
+]
+
+# Gradual typing - start with basic checks
+disallow_untyped_defs = false
+check_untyped_defs = false
+
+# Disable strict optional checking for gradual adoption
+strict_optional = false
+
+# Disable some checks for legacy code
+disable_error_code = [
+    "no-redef",        # Allow import redefinitions in try/except
+    "attr-defined",    # Allow dynamic attributes
+    "var-annotated",   # Don't require all variable annotations
+    "union-attr",      # Don't check optional attributes strictly
+    "arg-type",        # Relax argument type checking
+    "assignment",      # Relax assignment checking
+    "operator",        # Relax operator checking
+    "type-var",        # Relax type variable checking
+    "import-untyped",  # Allow imports without type stubs
+]
+
+# Per-module overrides for fully typed modules
+[[tool.mypy.overrides]]
+module = [
+    "kicomav.kavcore.k2security",
+    "kicomav.kavcore.k2file",
+    "kicomav.plugins.kernel",
+]
+check_untyped_defs = true
+warn_return_any = false

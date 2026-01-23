@@ -10,15 +10,11 @@ Icon File Format Engine Plugin
 This plugin handles ICO (Icon) format for scanning and analysis.
 """
 
-import logging
 import re
 import struct
 
 from kicomav.plugins import kavutil
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # Pattern for icon dimensions
 p_name = re.compile(r"(\d+)x(\d+)")
@@ -64,7 +60,7 @@ class KavMain(ArchivePluginBase):
             return buf
 
         except (IOError, OSError) as e:
-            logger.debug("Failed to open icon file %s: %s", filename, e)
+            self.logger.debug("Failed to open icon file %s: %s", filename, e)
 
         return None
 
@@ -88,9 +84,9 @@ class KavMain(ArchivePluginBase):
                 return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -124,11 +120,11 @@ class KavMain(ArchivePluginBase):
                 file_scan_list.append(["arc_icon", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except (IndexError, struct.error) as e:
-            logger.debug("Archive list parse error for %s: %s", filename, e)
+            self.logger.debug("Archive list parse error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -168,16 +164,8 @@ class KavMain(ArchivePluginBase):
                         return mm[img_off : img_off + img_size]
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                self.handle.pop(fname, None)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)

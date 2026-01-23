@@ -9,7 +9,6 @@ This plugin handles PYZ (Python Zip) format for scanning and manipulation.
 
 import contextlib
 import logging
-import marshal
 import os
 import re
 import struct
@@ -20,9 +19,8 @@ from kicomav.plugins import cryptolib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
-# Module logger
 logger = logging.getLogger(__name__)
 
 # https://github.com/nedbat/coveragepy/blob/master/lab/show_pyc.py
@@ -52,7 +50,14 @@ class PyzFile:
 
             fp.seek(toc_off)
             toc = fp.read()
-            self.tocs = marshal.loads(toc)  # ListType or DictionaryType?
+            # Use secure marshal loading with type validation (CWE-502)
+            try:
+                self.tocs = k2security.safe_marshal_load_toc(toc)
+            except k2security.MarshalSecurityError as e:
+                logger.warning("Security issue in PYZ file %s: %s", self.filename, e)
+                fp.close()
+                self.fp = None
+                return None
 
     def close(self):
         if self.fp:
@@ -66,20 +71,26 @@ class PyzFile:
             if isinstance(self.tocs, dict):
                 for key in self.tocs.keys():
                     if isinstance(key, bytes):
-                        names.append(key.decode("utf-8", "replace"))
+                        name = key.decode("utf-8", "replace")
                     else:
-                        names.append(key)
+                        name = key
+                    names.append(name + ".pyc")
             elif isinstance(self.tocs, list):
                 for x in self.tocs:
                     name = x[0]
                     if isinstance(name, bytes):
-                        names.append(name.decode("utf-8", "replace"))
-                    else:
-                        names.append(name)
+                        name = name.decode("utf-8", "replace")
+                    names.append(name + ".pyc")
 
         return names
 
     def read(self, fname):
+        # Remove .pyc extension if present for lookup
+        if isinstance(fname, str) and fname.endswith(".pyc"):
+            fname = fname[:-4]
+        elif isinstance(fname, bytes) and fname.endswith(b".pyc"):
+            fname = fname[:-4]
+
         # Try both string and bytes versions of fname for lookup
         fname_bytes = fname.encode("utf-8") if isinstance(fname, str) else fname
         fname_str = fname if isinstance(fname, str) else fname.decode("utf-8", "replace")
@@ -159,28 +170,8 @@ class KavMain(ArchivePluginBase):
         return 0
 
     def __get_handle(self, filename):
-        """Get or create handle for PYZ file.
-
-        Args:
-            filename: Path to PYZ file
-
-        Returns:
-            PyzFile object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = PyzFile(filename, self.verbose)
-            self.handle[filename] = zfile
-            return zfile
-
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open PYZ file %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error opening PYZ file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for PYZ file."""
+        return self._get_or_create_handle(filename, PyzFile, self.verbose)
 
     def format(self, filehandle, filename, filename_ex):
         """Analyze and detect PYZ/PYC format.
@@ -216,9 +207,9 @@ class KavMain(ArchivePluginBase):
                         ret["ff_pyc"] = "Python >= 3.8"
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return ret
 
@@ -248,9 +239,9 @@ class KavMain(ArchivePluginBase):
                     file_scan_list.append(["arc_pyz", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -267,7 +258,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_pyz":
@@ -281,25 +272,11 @@ class KavMain(ArchivePluginBase):
             return zfile.read(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
 
     def scan(self, filehandle, filename, fileformat, filename_ex):
         """Scan for malware.
@@ -318,7 +295,7 @@ class KavMain(ArchivePluginBase):
                 return False, "", -1, kernel.NOT_FOUND
 
             if self.verbose:
-                print("-" * 79)
+                self.logger.info("-" * 79)
                 kavutil.vprint("Engine")
                 kavutil.vprint(None, "Engine", "pyz")
 
@@ -326,7 +303,6 @@ class KavMain(ArchivePluginBase):
 
             if len(mm):
                 if self.verbose:
-                    print()
                     kavutil.vprint("String")
 
                 for match in self.p_string.finditer(mm):
@@ -350,9 +326,9 @@ class KavMain(ArchivePluginBase):
                             return True, vname, kernel.DISINFECT_DELETE, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -374,8 +350,8 @@ class KavMain(ArchivePluginBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False

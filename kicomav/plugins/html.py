@@ -8,17 +8,13 @@ This plugin handles HTML format for scanning, malware detection, and extraction.
 """
 
 import contextlib
-import logging
 import os
 import re
 
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 HTML_KEY_COUNT = 3  # Is there at least 3 HTML keywords?
 
@@ -111,9 +107,9 @@ class KavMain(ArchivePluginBase):
                     return {"ff_html": fileformat}
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -131,15 +127,20 @@ class KavMain(ArchivePluginBase):
         """
         try:
             mm = filehandle
-            buf = mm.read(4096) if hasattr(mm, "read") else mm[:4096]
+            # Use slicing for mmap/bytes, seek+read for file-like objects
+            if hasattr(mm, "seek"):
+                mm.seek(0)
+                buf = mm.read(4096)
+            else:
+                buf = mm[:4096]
 
             if kavutil.is_textfile(buf) and self.p_html_malware and self.p_html_malware.search(buf):
                 return True, "Trojan.HTML.IFrame.a", 0, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -160,9 +161,9 @@ class KavMain(ArchivePluginBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False
 
@@ -205,9 +206,9 @@ class KavMain(ArchivePluginBase):
                         p_count += 1
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -255,9 +256,9 @@ class KavMain(ArchivePluginBase):
                         return buf[pos[0] : pos[1]]
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
 
@@ -325,12 +326,8 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        pass  # No persistent handles to close

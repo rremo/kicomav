@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple
 
 from . import k2security
-from .config import get_config
+from .k2config import get_config
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -123,11 +123,11 @@ def check_package_update(
 
 
 def _check_need_update(filepath: str, expected_hash: str) -> bool:
-    """Check if a file needs to be updated by comparing SHA1 hashes.
+    """Check if a file needs to be updated by comparing SHA-256 hashes.
 
     Args:
         filepath: Path to the local file
-        expected_hash: Expected SHA1 hash from update config
+        expected_hash: Expected SHA-256 hash from update config
 
     Returns:
         True if update is needed, False otherwise
@@ -135,7 +135,8 @@ def _check_need_update(filepath: str, expected_hash: str) -> bool:
     try:
         with open(filepath, "rb") as fp:
             data = fp.read()
-        s = hashlib.sha1()
+        # CWE-327: Use SHA-256 for secure file integrity verification
+        s = hashlib.sha256()
         s.update(data)
         return s.hexdigest().lower() != expected_hash.lower()
     except (IOError, OSError):
@@ -254,8 +255,8 @@ def _get_signature_download_list(url: str, rules_path: str) -> Tuple[List[str], 
         with open(temp_cfg_path, "r") as f:
             buf = f.read()
 
-        # Format: [sha1] [filepath]
-        p_lists = re.compile(r"([A-Fa-f0-9]{40}) (.+)")
+        # Format: [sha256] [filepath] - CWE-327: Use SHA-256 for secure verification
+        p_lists = re.compile(r"([A-Fa-f0-9]{64}) (.+)")
         lines = p_lists.findall(buf)
 
         for line in lines:
@@ -298,12 +299,13 @@ def _get_local_files(rules_path: str) -> Set[str]:
         Set of relative file paths
     """
     local_files: Set[str] = set()
-    for filepath in glob.glob(os.path.join(rules_path, "**", "*"), recursive=True):
-        if os.path.isdir(filepath):
-            continue
-        rel_path = os.path.relpath(filepath, rules_path)
-        rel_path = rel_path.replace("\\", "/")
-        local_files.add(rel_path)
+    # Use os.walk instead of glob.glob to include hidden files/folders
+    for root, dirs, files in os.walk(rules_path):
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            rel_path = os.path.relpath(filepath, rules_path)
+            rel_path = rel_path.replace("\\", "/")
+            local_files.add(rel_path)
     return local_files
 
 

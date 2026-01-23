@@ -3,27 +3,62 @@
 
 
 import contextlib
+import glob
+import logging
 import os
 import re
 import struct
-import glob
-import marshal
 import time
-import math
-import zlib
 import zipfile
+
+from kicomav.kavcore import k2security
+
+logger = logging.getLogger(__name__)
 
 
 # -------------------------------------------------------------------------
-# Message printing function
+# NullLogger - discards all log messages
+# -------------------------------------------------------------------------
+class NullLogger:
+    """Null logger that discards all log messages."""
+
+    def debug(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+    def critical(self, *args, **kwargs):
+        pass
+
+    def exception(self, *args, **kwargs):
+        pass
+
+
+_null_logger = NullLogger()
+
+
+def get_logger(logger=None):
+    """Return logger or NullLogger if None."""
+    return logger if logger is not None else _null_logger
+
+
+# -------------------------------------------------------------------------
+# Message printing function (verbose output)
 # -------------------------------------------------------------------------
 def vprint(header, section=None, msg=None):
     if header:
-        print(f"[*] {header}")
+        logger.info("[*] %s", header)
 
     if section:
         new_msg = f"{msg[:22]} ... {msg[-22:]}" if len(msg) > 50 else msg
-        print(f"    [-] {section}: {new_msg}")
+        logger.info("    [-] %s: %s", section, new_msg)
 
 
 # -------------------------------------------------------------------------
@@ -151,7 +186,7 @@ class PatternMD5:
 
     # ---------------------------------------------------------------------
     # __load_sig(self, fname)
-    # Load malware pattern
+    # Load malware pattern with security validation (CWE-502)
     # input  : fname - Malware pattern file name
     # return : Malware pattern data structure
     # ---------------------------------------------------------------------
@@ -159,9 +194,10 @@ class PatternMD5:
         try:
             with open(fname, "rb") as fp:
                 data = fp.read()
-                if data[:4] == b"KAVS":
-                    return marshal.loads(zlib.decompress(data[12:]))
-        except IOError:
+                # Use secure marshal loading with integrity checks
+                return k2security.safe_marshal_load_kavs(data, allow_unsigned=True)
+        except (IOError, k2security.MarshalSecurityError) as e:
+            logger.debug("Failed to load signature file %s: %s", fname, e)
             return None
 
     # ---------------------------------------------------------------------
@@ -405,7 +441,7 @@ class PatternVDB:
 
     # ---------------------------------------------------------------------
     # __load_sig(self, fname)
-    # Load malware pattern
+    # Load malware pattern with security validation (CWE-502)
     # input  : fname - Malware pattern file name
     # return : Malware pattern data structure
     # ---------------------------------------------------------------------
@@ -413,9 +449,10 @@ class PatternVDB:
         try:
             with open(fname, "rb") as fp:
                 data = fp.read()
-                if data[:4] == b"KAVS":
-                    return marshal.loads(zlib.decompress(data[12:]))
-        except IOError:
+                # Use secure marshal loading with integrity checks
+                return k2security.safe_marshal_load_kavs(data, allow_unsigned=True)
+        except (IOError, k2security.MarshalSecurityError) as e:
+            logger.debug("Failed to load signature file %s: %s", fname, e)
             return None
 
     # ---------------------------------------------------------------------
@@ -648,6 +685,7 @@ class HexDump:
         # [width*col ... width * (col+1)]
         r_size = 0
         line_start = row + (col * width)
+        lines = []
         while True:
             line = buf[line_start : width * (col + 1)]
 
@@ -664,13 +702,15 @@ class HexDump:
             # Character value
             output += row * " "
             output += "".join([".", chr(c)][self.IsPrint(c)] for c in line)
-            print(output)
+            lines.append(output)
             line_start = width * (col + 1)
             col += 1
             row = 0
             r_size += len(line)
             if r_size == size:
                 break
+        if lines:
+            logger.debug("HexDump:\n%s", "\n".join(lines))
 
     # -------------------------------------------------------------------------
     # IsPrint

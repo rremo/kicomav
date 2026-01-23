@@ -14,6 +14,9 @@ hwp
 hwpx
 yaraex
 elf
+macho
+dex
+axml
 html
 script
 rtf
@@ -22,6 +25,7 @@ lnk
 pyz
 carch
 olenative
+onenote
 nsis
 ishield
 attach

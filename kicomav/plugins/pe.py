@@ -13,7 +13,6 @@ It also provides resource extraction capabilities.
 import binascii
 import contextlib
 import ctypes
-import logging
 import os
 import re
 import struct
@@ -22,10 +21,7 @@ import zlib
 from kicomav.plugins import cryptolib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 BYTE = ctypes.c_ubyte
 WORD = ctypes.c_ushort
@@ -169,7 +165,7 @@ p_str = re.compile(rb"[^\x00]*")  # Copy up to the NULL character
 
 
 class PE:
-    def __init__(self, mm, verbose, filename):
+    def __init__(self, mm, verbose, filename, logger=None):
         self.filename = filename
         self.filesize = os.path.getsize(filename)
         self.verbose = verbose
@@ -177,6 +173,7 @@ class PE:
         self.sections = []  # List to hold all section information
         self.data_directories = []  # List to hold all data directory information
         self.pe_file_align = 0
+        self.logger = kavutil.get_logger(logger)
 
     # -------------------------------------------------------------------------
     # parse(mm)
@@ -410,13 +407,12 @@ class PE:
 
     # Print PE debug information
     def print_pe_debug_info(self, mm, pe_format, section_num):
-        print("-" * 79)
+        self.logger.info("-" * 79)
         kavutil.vprint("Engine")
         kavutil.vprint(None, "Engine", "pe")
         kavutil.vprint(None, "File name", os.path.split(self.filename)[-1])
         kavutil.vprint(None, "MD5", cryptolib.md5(mm[:]))
 
-        print()
         kavutil.vprint("PE")
         kavutil.vprint(None, "EntryPoint", "%08X" % pe_format["EntryPoint"])
         kavutil.vprint(
@@ -427,13 +423,12 @@ class PE:
 
         # View sections
         if section_num:
-            print()
             kavutil.vprint("Section Header")
-            print("    %-8s %-8s %-8s %-8s %-8s %-8s" % ("Name", "VOFF", "VSIZE", "FOFF", "FSIZE", "EXEC"))
-            print("    " + ("-" * (9 * 6 - 1)))
+            lines = ["    %-8s %-8s %-8s %-8s %-8s %-8s" % ("Name", "VOFF", "VSIZE", "FOFF", "FSIZE", "EXEC")]
+            lines.append("    " + ("-" * (9 * 6 - 1)))
 
             for s in self.sections:
-                print(
+                lines.append(
                     "    %-8s %08X %08X %08X %08X %-05s"
                     % (
                         s["Name"],
@@ -444,29 +439,27 @@ class PE:
                         s["Characteristics"] & 0x20000000 == 0x20000000,
                     )
                 )
+            self.logger.info("\n".join(lines))
 
         if section_num:
-            print()
             kavutil.vprint("Section MD5")
-            print("    %-8s %-8s %-32s" % ("Name", "FSIZE", "MD5"))
-            print("    " + ("-" * ((9 * 2 - 1) + 32)))
+            lines = ["    %-8s %-8s %-32s" % ("Name", "FSIZE", "MD5")]
+            lines.append("    " + ("-" * ((9 * 2 - 1) + 32)))
 
             for s in self.sections:
                 off = s["PointerRawData"]
                 size = s["SizeRawData"]
                 fmd5 = cryptolib.md5(mm[off : off + size]) if size else "-"
-                print("    %-8s %8d %s" % (s["Name"], size, fmd5))
+                lines.append("    %-8s %8d %s" % (s["Name"], size, fmd5))
+            self.logger.info("\n".join(lines))
 
-        print()
         kavutil.vprint("Entry Point (Raw)")
-        print()
         kavutil.HexDump().Buffer(mm[:], pe_format["EntryPointRaw"], 0x80)
-        print()
+
         if "PDB_Name" in pe_format:
             kavutil.vprint("PDB Information")
             kavutil.vprint(None, "Name", f'{repr(pe_format["PDB_Name"])}')
-            print(repr(pe_format["PDB_Name"]))
-            print()
+            self.logger.info("%s", repr(pe_format["PDB_Name"]))
 
     def parse_pe_resources(self, rsrc_rva, mm, rsrc_size, pe_format):
         rsrc_off, rsrc_idx = self.rva_to_off(rsrc_rva)  # Convert resource position
@@ -631,7 +624,7 @@ class KavMain(ArchivePluginBase):
         ret = {}
 
         try:
-            pe = PE(filehandle, self.verbose, filename)
+            pe = PE(filehandle, self.verbose, filename, logger=self.logger)
             try:
                 pe_format = pe.parse()
             except MemoryError:
@@ -675,9 +668,9 @@ class KavMain(ArchivePluginBase):
                 self._detect_installers(mm, pe_format, pe_file_align, pe_size, last_section_off, attach_size, ret)
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return ret if ret else None
 
@@ -757,8 +750,10 @@ class KavMain(ArchivePluginBase):
                 }
 
         # Process attachments (do not process if NSIS or InstallShield exists)
+        # Also skip if attach_size is invalid (zero or negative)
         if (
-            "ff_nsis" not in ret
+            attach_size > 0
+            and "ff_nsis" not in ret
             and "ff_installshield" not in ret
             and "ff_installshield_embedded_file" not in ret
             and "ff_installshield_setup_stream" not in ret
@@ -788,9 +783,9 @@ class KavMain(ArchivePluginBase):
                     file_scan_list.append(["arc_pe_rcdata:%d:%d" % (off, size), key])
 
         except (KeyError, TypeError) as e:
-            logger.debug("Archive list error for %s: %s", filename, e)
+            self.logger.debug("Archive list error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing resources in %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing resources in %s: %s", filename, e)
 
         return file_scan_list
 
@@ -820,14 +815,10 @@ class KavMain(ArchivePluginBase):
             return data
 
         except (IOError, OSError) as e:
-            logger.debug("Resource extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Resource extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except (ValueError, IndexError) as e:
-            logger.debug("Resource extract parse error: %s", e)
+            self.logger.debug("Resource extract parse error: %s", e)
         except Exception as e:
-            logger.warning("Unexpected error extracting resource %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting resource %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        pass  # No persistent handles to close

@@ -14,15 +14,11 @@ import os
 import shutil
 import zipfile
 import zlib
-import logging
 
-from kicomav.plugins import kernel
 from kicomav.plugins import kavutil
+from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 
 # -------------------------------------------------------------------------
@@ -69,7 +65,11 @@ class AlzFile:
                         ret_data = data
                         break
                     elif method == COMPRESS_METHOD_DEFLATE:
-                        ret_data = zlib.decompress(data, -15)
+                        # Use safe decompression to prevent bomb attacks
+                        try:
+                            ret_data = k2security.safe_zlib_decompress(data, wbits=-15)
+                        except k2security.DecompressionBombError:
+                            ret_data = None  # Skip potentially dangerous data
                         break
                     elif method == COMPRESS_METHOD_BZIP2:
                         ret_data = bz2.decompress(data)
@@ -194,6 +194,11 @@ class KavMain(ArchivePluginBase):
     - Converting ALZ to ZIP format
     """
 
+    # Set engine type to ARCHIVE_ENGINE
+    engine_type = kernel.ARCHIVE_ENGINE
+    # Enable archive creation (kernel.MASTER_PACK = 1)
+    make_arc_type = 1
+
     def __init__(self):
         """Initialize the ALZ plugin."""
         super().__init__(
@@ -203,32 +208,9 @@ class KavMain(ArchivePluginBase):
             kmd_name="alz",
         )
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        info["make_arc_type"] = kernel.MASTER_PACK
-        return info
-
     def __get_handle(self, filename):
-        """Get or create handle for ALZ file.
-
-        Args:
-            filename: Path to ALZ file
-
-        Returns:
-            AlzFile object
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-        else:
-            zfile = AlzFile(filename)
-            self.handle[filename] = zfile
-            return zfile
+        """Get or create handle for ALZ file."""
+        return self._get_or_create_handle(filename, AlzFile)
 
     def format(self, filehandle, filename, filename_ex):
         """Analyze and detect ALZ format.
@@ -247,9 +229,9 @@ class KavMain(ArchivePluginBase):
                 fileformat = {"size": len(mm)}
                 return {"ff_alz": fileformat}
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -274,9 +256,9 @@ class KavMain(ArchivePluginBase):
                         file_scan_list.append(["arc_alz", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -293,7 +275,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         try:
@@ -302,24 +284,11 @@ class KavMain(ArchivePluginBase):
                 return zfile.read(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle[fname]
-                zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create archive (converts ALZ to ZIP format).
@@ -361,9 +330,9 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False
 

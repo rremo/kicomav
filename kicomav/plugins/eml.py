@@ -14,17 +14,12 @@ Supports:
 import email
 import re
 import os
-import logging
 from email import policy
 from email.parser import BytesParser
 from typing import Optional, Dict, Any, List
 
-from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # EML header patterns for validation
 EML_HEADER_PATTERNS = {
@@ -68,10 +63,10 @@ class EMLHandle:
             self._build_attachment_cache()
             return True
         except (IOError, OSError) as e:
-            logger.debug("Failed to open EML file %s: %s", self.filename, e)
+            self.logger.debug("Failed to open EML file %s: %s", self.filename, e)
             return False
         except Exception as e:
-            logger.debug("Failed to parse EML file %s: %s", self.filename, e)
+            self.logger.debug("Failed to parse EML file %s: %s", self.filename, e)
             return False
 
     def close(self):
@@ -150,7 +145,7 @@ class EMLHandle:
             payload = part.get_payload(decode=True)
             return payload
         except Exception as e:
-            logger.debug("Failed to extract attachment %s: %s", filename, e)
+            self.logger.debug("Failed to extract attachment %s: %s", filename, e)
             return None
 
 
@@ -196,8 +191,7 @@ def is_valid_eml(data: bytes) -> bool:
 
         return False
 
-    except Exception as e:
-        logger.debug("EML validation error: %s", e)
+    except Exception:
         return False
 
 
@@ -239,16 +233,6 @@ class KavMain(ArchivePluginBase):
         self.arcclose()
         return 0
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        return info
-
     def __get_handle(self, filename: str) -> Optional[EMLHandle]:
         """Get or create handle for EML file.
 
@@ -289,9 +273,9 @@ class KavMain(ArchivePluginBase):
                 return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -318,9 +302,9 @@ class KavMain(ArchivePluginBase):
                             file_scan_list.append(["arc_eml", attachment_name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -337,7 +321,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.debug("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id != "arc_eml":
@@ -351,22 +335,8 @@ class KavMain(ArchivePluginBase):
             return eml_handle.extract_attachment(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open EML handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                eml_handle = self.handle[fname]
-                if hasattr(eml_handle, "close"):
-                    eml_handle.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

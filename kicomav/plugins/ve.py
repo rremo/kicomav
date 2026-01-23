@@ -8,18 +8,13 @@ This plugin handles virus type malware detection using signature patterns.
 """
 
 import contextlib
-import logging
 import os
 
 from kicomav.plugins import cryptolib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
-
-# Module logger
-logger = logging.getLogger(__name__)
-
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
 
 # -------------------------------------------------------------------------
 # Structure of the signature file
@@ -213,9 +208,9 @@ class KavMain(MalwareDetectorBase):
                                         return True, vname, 0, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", -1, kernel.NOT_FOUND
 
@@ -248,13 +243,12 @@ class KavMain(MalwareDetectorBase):
 
     def write_debug_vdb_file(self, filename, mm, flags, cs_size):
         """Write debug VDB file in verbose mode."""
-        print("-" * 79)
+        self.logger.info("-" * 79)
         kavutil.vprint("Engine")
         kavutil.vprint(None, "Engine", "ve")
         kavutil.vprint(None, "File name", os.path.split(filename)[-1])
         kavutil.vprint(None, "MD5", cryptolib.md5(mm[:]))
 
-        print()
         kavutil.vprint("VE")
         vdb_name = f"{os.path.split(filename)[-1]}.vdb"
         kavutil.vprint(None, "VDB File name", vdb_name)
@@ -286,9 +280,9 @@ class KavMain(MalwareDetectorBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False
 

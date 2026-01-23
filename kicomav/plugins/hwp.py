@@ -8,7 +8,6 @@ This plugin handles HWP (Hangul Word Processor) format for malware detection.
 """
 
 import contextlib
-import logging
 import os
 import re
 import zlib
@@ -16,10 +15,7 @@ import zlib
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
 
 
 # -------------------------------------------------------------------------
@@ -100,7 +96,7 @@ class KavMain(MalwareDetectorBase):
             0 for success
         """
         # Compile patterns
-        self.hwp_ole = re.compile(b"bindata/bin\d+\.ole$", re.IGNORECASE)
+        self.hwp_ole = re.compile(rb"bindata/bin\d+\.ole$", re.IGNORECASE)
 
         s = rb"n\x00e\x00w\x00(\x20\x00)+A\x00c\x00t\x00i\x00v\x00e\x00X\x00O\x00b\x00j\x00e\x00c\x00t\x00"
         self.hwp_js = re.compile(s, re.IGNORECASE)
@@ -151,9 +147,9 @@ class KavMain(MalwareDetectorBase):
                     return True, "Exploit.JS.Agent.gen", kernel.DISINFECT_DELETE, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         # Return that no malware was found
         return False, "", kernel.DISINFECT_NONE, kernel.NOT_FOUND
@@ -176,8 +172,8 @@ class KavMain(MalwareDetectorBase):
                 return True
 
         except (IOError, OSError, k2security.SecurityError) as e:
-            logger.debug("Disinfect error for %s: %s", filename, e)
+            self.logger.debug("Disinfect error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error disinfecting %s: %s", filename, e)
+            self.logger.warning("Unexpected error disinfecting %s: %s", filename, e)
 
         return False

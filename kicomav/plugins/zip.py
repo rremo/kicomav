@@ -11,7 +11,6 @@ import os
 import shutil
 import zipfile
 import contextlib
-import logging
 import tempfile
 
 import py7zr
@@ -19,10 +18,7 @@ import py7zr
 from kicomav.plugins import kavutil
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 
 # -------------------------------------------------------------------------
@@ -37,6 +33,11 @@ class KavMain(ArchivePluginBase):
     - Extracting files from archives
     - Creating/updating archives
     """
+
+    # Set engine type to ARCHIVE_ENGINE
+    engine_type = kernel.ARCHIVE_ENGINE
+    # Enable archive creation (kernel.MASTER_PACK = 1)
+    make_arc_type = 1
 
     def __init__(self):
         """Initialize the ZIP plugin."""
@@ -67,52 +68,19 @@ class KavMain(ArchivePluginBase):
         self.arcclose()
         return 0
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        info["make_arc_type"] = kernel.MASTER_PACK
-        return info
-
     def __get_handle(self, filename):
-        """Get or create handle for ZIP file.
-
-        Args:
-            filename: Path to ZIP file
-
-        Returns:
-            ZipFile object
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-        else:
-            zfile = zipfile.ZipFile(filename)
-            self.handle[filename] = zfile
-            return zfile
+        """Get or create handle for ZIP file."""
+        return self._get_or_create_handle(filename, zipfile.ZipFile)
 
     def __get_handle_7z(self, filename, password=None):
-        """Get or create handle for 7Z file.
-
-        Args:
-            filename: Path to 7Z file
-            password: Optional password for encrypted archives
-
-        Returns:
-            SevenZipFile object
-        """
+        """Get or create handle for 7Z file."""
         if filename in self.handle:
-            return self.handle.get(filename, None)
-        else:
-            if password:
-                zfile = py7zr.SevenZipFile(filename, mode="r", password=password)
-            else:
-                zfile = py7zr.SevenZipFile(filename, mode="r")
-            self.handle[filename] = zfile
-            return zfile
+            return self.handle[filename]
+        # 7z needs special handling for password
+        kwargs = {"mode": "r"}
+        if password:
+            kwargs["password"] = password
+        return self._get_or_create_handle(filename, py7zr.SevenZipFile, **kwargs)
 
     def format(self, filehandle, filename, filename_ex):
         """Analyze and detect archive format.
@@ -158,9 +126,9 @@ class KavMain(ArchivePluginBase):
                 return ret
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
@@ -183,6 +151,8 @@ class KavMain(ArchivePluginBase):
         try:
             if "ff_zip" in fileformat:
                 zfile = self.__get_handle(filename)
+                if zfile is None:
+                    return file_scan_list
                 for name in zfile.namelist():
                     # CWE-22: Path traversal prevention
                     if k2security.is_safe_archive_member(name):
@@ -191,15 +161,17 @@ class KavMain(ArchivePluginBase):
             elif "ff_7z" in fileformat:
                 # 7z needs password at open time for encrypted headers
                 zfile = self.__get_handle_7z(filename, password)
+                if zfile is None:
+                    return file_scan_list
                 for name in zfile.getnames():
                     # CWE-22: Path traversal prevention
                     if k2security.is_safe_archive_member(name):
                         file_scan_list.append(["arc_7z", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -216,7 +188,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id == "arc_zip":
@@ -246,16 +218,16 @@ class KavMain(ArchivePluginBase):
         except RuntimeError as e:
             # RuntimeError is raised for password-protected files
             if "password" not in str(e).lower():
-                logger.debug("ZIP extract error for %s: %s", fname_in_arc, e)
+                self.logger.debug("ZIP extract error for %s: %s", fname_in_arc, e)
                 return None
         except zipfile.BadZipfile as e:
-            logger.debug("Bad ZIP file when extracting %s: %s", fname_in_arc, e)
+            self.logger.debug("Bad ZIP file when extracting %s: %s", fname_in_arc, e)
             return None
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
             return None
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
             return None
 
         # Try 2: Extract with stored password
@@ -264,16 +236,16 @@ class KavMain(ArchivePluginBase):
                 pwd = self.password.encode() if isinstance(self.password, str) else self.password
                 return zfile.read(fname_in_arc, pwd=pwd)
             except RuntimeError as e:
-                logger.debug("Wrong password for %s in ZIP archive: %s", fname_in_arc, e)
+                self.logger.debug("Wrong password for %s in ZIP archive: %s", fname_in_arc, e)
                 raise RuntimeError("password required")
             except zipfile.BadZipfile as e:
-                logger.debug("Bad ZIP file when extracting %s with password: %s", fname_in_arc, e)
+                self.logger.debug("Bad ZIP file when extracting %s with password: %s", fname_in_arc, e)
             except (IOError, OSError) as e:
-                logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+                self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
             except Exception as e:
-                logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+                self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
         else:
-            logger.debug("Password required for %s in ZIP archive", fname_in_arc)
+            self.logger.debug("Password required for %s in ZIP archive", fname_in_arc)
             raise RuntimeError("password required")
 
         return None
@@ -302,28 +274,16 @@ class KavMain(ArchivePluginBase):
                     with open(extracted_path, "rb") as f:
                         return f.read()
         except py7zr.exceptions.PasswordRequired:
-            logger.debug("Password required for %s in 7Z archive", fname_in_arc)
+            self.logger.debug("Password required for %s in 7Z archive", fname_in_arc)
             raise RuntimeError("password required")
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract error for %s in %s: %s", fname_in_arc, arc_name, e)
 
         return None
 
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle[fname]
-                if hasattr(zfile, "close"):
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
+    # arcclose() inherited from ArchivePluginBase
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create or update an archive.
@@ -352,9 +312,9 @@ class KavMain(ArchivePluginBase):
                 return self._convert_7z_to_zip(arc_name, file_infos)
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False
 
@@ -393,9 +353,9 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.error("7Z to ZIP conversion IO error for %s: %s", arc_name, e)
+            self.logger.error("7Z to ZIP conversion IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error converting 7Z to ZIP %s: %s", arc_name, e)
+            self.logger.error("Unexpected error converting 7Z to ZIP %s: %s", arc_name, e)
 
         return False
 

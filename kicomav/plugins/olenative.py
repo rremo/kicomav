@@ -8,17 +8,14 @@ Ole10Native Archive Engine Plugin
 This plugin handles Ole10Native stream format for scanning and manipulation.
 """
 
-import contextlib
 import logging
-import os
 import struct
 
 from kicomav.plugins import kernel
 from kicomav.plugins import kavutil
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
-# Module logger
 logger = logging.getLogger(__name__)
 
 MAX_PATH = 512
@@ -72,7 +69,6 @@ def analysis_ole10native(mm, verbose=False):
                 raise ValueError
 
             if verbose:
-                print()
                 kavutil.vprint("Ole10Native Stream")
                 kavutil.vprint(None, "Size", f"0x{size:08X}")
                 kavutil.vprint(None, "Label", fileformat["label"])
@@ -81,17 +77,15 @@ def analysis_ole10native(mm, verbose=False):
                 kavutil.vprint(None, "Data Offset", f"0x{off + 4:08X}")
                 kavutil.vprint(None, "Data Size", f"0x{data_size:08X}")
 
-                print()
                 kavutil.vprint("Data Dump")
-                print()
                 kavutil.HexDump().Buffer(mm[:], off + 4, 0x80)
-                print()
 
             return fileformat
     except ValueError:
+        # Intentional: raised at line 70 for size validation failure
         pass
-    except struct.error:
-        pass
+    except struct.error as e:
+        logger.debug("Ole10Native parse struct error: %s", e)
 
     return None
 
@@ -147,9 +141,9 @@ class KavMain(ArchivePluginBase):
                     ret = {"ff_ole10native": fileformat}
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return ret
 
@@ -174,7 +168,7 @@ class KavMain(ArchivePluginBase):
 
             # CWE-22: Path traversal prevention
             if not k2security.is_safe_archive_member(name):
-                logger.warning("Unsafe archive member rejected: %s in %s", name, filename)
+                self.logger.warning("Unsafe archive member rejected: %s in %s", name, filename)
                 return file_scan_list
 
             off = fformat["data_off"]
@@ -184,9 +178,9 @@ class KavMain(ArchivePluginBase):
             file_scan_list.append([arc_name, name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -203,7 +197,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         if arc_engine_id.find("arc_ole10native:") == -1:
@@ -219,15 +213,11 @@ class KavMain(ArchivePluginBase):
                 return buf[off : off + size]
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        pass  # No persistent handles to close
 
     def mkarc(self, arc_engine_id, arc_name, file_infos):
         """Create an Ole10Native archive.
@@ -267,8 +257,8 @@ class KavMain(ArchivePluginBase):
             return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False

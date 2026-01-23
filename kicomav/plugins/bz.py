@@ -5,38 +5,46 @@
 BZ2 Archive Engine Plugin
 
 This plugin handles BZ2 archive format for scanning and manipulation.
+Includes support for detecting attached data after BZ2 stream.
 """
 
 import bz2
 import mmap
-import os
-import logging
+from typing import Any, Dict, List, Optional
 
 from kicomav.plugins import kernel
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import SingleStreamArchiveBase
 
 
 # -------------------------------------------------------------------------
 # class BZ2File
 # -------------------------------------------------------------------------
 class BZ2File:
-    """BZ2 file handler with attached data support."""
+    """BZ2 file handler with attached data support.
 
-    def __init__(self, filename, mode="r"):
+    This class handles BZ2 files that may have additional data
+    appended after the compressed stream (attached data).
+    """
+
+    def __init__(self, filename: str, mode: str = "r"):
+        """Initialize BZ2File handler.
+
+        Args:
+            filename: Path to BZ2 file
+            mode: Open mode ('r' for read, 'w' for write)
+        """
         self.mode = mode
+        self.decompress_data = None
+        self.unused_data = None
+        self.fp = None
+        self.mm = None
+        self.bz2_file = None
 
         if mode == "r":
-            self.decompress_data = None
-            self.unused_data = None
-
             self.fp = open(filename, "rb")
             self.mm = mmap.mmap(self.fp.fileno(), 0, access=mmap.ACCESS_READ)
-
         else:  # mode == 'w'
-            self.bz2 = bz2.BZ2File(filename, "w")
+            self.bz2_file = bz2.BZ2File(filename, "w")
 
     def __enter__(self):
         return self
@@ -44,10 +52,12 @@ class BZ2File:
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
-    def is_bz2(self):
-        return False if self.mode != "r" else self.mm[:3] == b"BZh"
+    def is_bz2(self) -> bool:
+        """Check if file has BZ2 signature."""
+        return self.mode == "r" and self.mm[:3] == b"BZh"
 
-    def is_attach(self):
+    def is_attach(self) -> bool:
+        """Check if file has attached data after BZ2 stream."""
         if self.mode != "r":
             return False
 
@@ -56,9 +66,16 @@ class BZ2File:
 
         return bool(self.unused_data)
 
-    def read(self):
+    def read(self) -> Optional[bytes]:
+        """Read and decompress BZ2 data.
+
+        Handles concatenated BZ2 streams and detects attached data.
+
+        Returns:
+            Decompressed data, or None if not valid BZ2
+        """
         if self.mode != "r":
-            return False
+            return None
 
         if not self.is_bz2():
             return None
@@ -68,24 +85,30 @@ class BZ2File:
 
         data = b""
         src = self.mm[:]
-        while len(src):
+
+        while src:
             try:
-                b = bz2.BZ2Decompressor()
-                data += b.decompress(src)
-                src = b.unused_data
+                decompressor = bz2.BZ2Decompressor()
+                data += decompressor.decompress(src)
+                src = decompressor.unused_data
             except IOError:
                 break
 
-        if len(src):
+        if src:
             self.unused_data = src
 
-        if data != b"":
+        if data:
             self.decompress_data = data
             return self.decompress_data
 
         return None
 
-    def get_attach_info(self):
+    def get_attach_info(self) -> tuple:
+        """Get attached data information.
+
+        Returns:
+            Tuple of (offset, size) or (None, None) if no attached data
+        """
         if self.mode != "r":
             return None, None
 
@@ -98,24 +121,32 @@ class BZ2File:
 
         return None, None
 
-    def write(self, data):
-        if self.mode != "w":
+    def write(self, data: bytes) -> bool:
+        """Write compressed data.
+
+        Args:
+            data: Data to compress and write
+
+        Returns:
+            True if successful
+        """
+        if self.mode != "w" or not self.bz2_file:
             return False
 
-        self.bz2.write(data)
+        self.bz2_file.write(data)
         return True
 
     def close(self):
-        if self.mode == "r":
-            if self.mm:
-                self.mm.close()
-                self.mm = None
-            if self.fp:
-                self.fp.close()
-                self.fp = None
-        elif hasattr(self, "bz2") and self.bz2:
-            self.bz2.close()
-            self.bz2 = None
+        """Close file handles."""
+        if self.mm:
+            self.mm.close()
+            self.mm = None
+        if self.fp:
+            self.fp.close()
+            self.fp = None
+        if self.bz2_file:
+            self.bz2_file.close()
+            self.bz2_file = None
 
     def __del__(self):
         self.close()
@@ -124,7 +155,7 @@ class BZ2File:
 # -------------------------------------------------------------------------
 # class KavMain
 # -------------------------------------------------------------------------
-class KavMain(ArchivePluginBase):
+class KavMain(SingleStreamArchiveBase):
     """BZ2 archive handler plugin.
 
     This plugin provides functionality for:
@@ -132,46 +163,46 @@ class KavMain(ArchivePluginBase):
     - Listing files within archives
     - Extracting files from archives
     - Creating/updating archives
+    - Detecting attached data after BZ2 stream
     """
+
+    # Set engine type to ARCHIVE_ENGINE
+    engine_type = kernel.ARCHIVE_ENGINE
+    # SingleStreamArchiveBase configuration
+    format_key = "ff_bz2"
+    engine_id = "arc_bz2"
+    signature = b"BZh"  # BZ2 magic number
+    signature_offset = 0
 
     def __init__(self):
         """Initialize the BZ2 plugin."""
         super().__init__(
             author="Kei Choi",
-            version="1.1",
+            version="1.2",
             title="Bz2 Archive Engine",
             kmd_name="bz2",
         )
 
-    def getinfo(self):
-        """Get plugin information.
-
-        Returns:
-            Dictionary containing plugin metadata
-        """
-        info = super().getinfo()
-        info["engine_type"] = kernel.ARCHIVE_ENGINE
-        info["make_arc_type"] = kernel.MASTER_PACK
-        return info
-
-    def __get_handle(self, filename):
-        """Get or create handle for BZ2 file.
+    def _open_stream(self, filename: str, mode: str):
+        """Open BZ2 stream using custom BZ2File handler.
 
         Args:
-            filename: Path to BZ2 file
+            filename: Path to archive file
+            mode: Open mode ("r" for read, "w" for write)
 
         Returns:
-            BZ2File object
+            BZ2File object (context manager)
         """
-        if filename in self.handle:
-            return self.handle[filename]
+        # Map "rb"/"wb" to "r"/"w" for BZ2File
+        bz2_mode = "r" if mode.startswith("r") else "w"
+        return BZ2File(filename, bz2_mode)
 
-        zfile = BZ2File(filename)
-        self.handle[filename] = zfile
-        return zfile
+    def __get_handle(self, filename: str) -> BZ2File:
+        """Get or create cached handle for BZ2 file."""
+        return self._get_or_create_handle(filename, BZ2File)
 
-    def format(self, filehandle, filename, filename_ex):
-        """Analyze and detect BZ2 format.
+    def format(self, filehandle: bytes, filename: str, filename_ex: str) -> Optional[Dict[str, Any]]:
+        """Analyze and detect BZ2 format with attached data detection.
 
         Args:
             filehandle: File data (memory mapped)
@@ -179,115 +210,90 @@ class KavMain(ArchivePluginBase):
             filename_ex: Extended filename info
 
         Returns:
-            Dictionary with format info, or None if not recognized
+            Dictionary with format info including attached data, or None
         """
         try:
-            if filehandle[:3] == b"BZh":
-                fileformat = {}
+            if filehandle[:3] != self.signature:
+                return None
 
-                with BZ2File(filename) as bfile:
-                    aoff, asize = bfile.get_attach_info()
-                    fileformat["ff_bz2"] = "bz2"
+            fileformat = {}
 
-                    if aoff:
-                        fileformat["ff_attach"] = {
-                            "Attached_Pos": aoff,
-                            "Attached_Size": asize,
-                        }
+            with BZ2File(filename) as bfile:
+                aoff, asize = bfile.get_attach_info()
+                fileformat[self.format_key] = "BZ2"
 
-                    return fileformat
+                if aoff:
+                    fileformat["ff_attach"] = {
+                        "Attached_Pos": aoff,
+                        "Attached_Size": asize,
+                    }
+
+                return fileformat
 
         except (IOError, OSError) as e:
-            logger.debug("Format detection IO error for %s: %s", filename, e)
+            self.logger.debug("Format detection IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error in format detection for %s: %s", filename, e)
+            self.logger.warning("Unexpected error in format detection for %s: %s", filename, e)
 
         return None
 
-    def arclist(self, filename, fileformat, password=None):
-        """List files in the archive.
+    def unarc(self, arc_engine_id: str, arc_name: str, fname_in_arc: str) -> Optional[bytes]:
+        """Extract the compressed content using cached handles.
 
         Args:
-            filename: Path to archive file
-            fileformat: Format info from format() method
-
-        Returns:
-            List of [engine_id, filename] pairs
-        """
-        file_scan_list = []
-
-        if "ff_bz2" in fileformat:
-            file_scan_list.append(["arc_bz2", "BZ2"])
-
-        return file_scan_list
-
-    def unarc(self, arc_engine_id, arc_name, fname_in_arc):
-        """Extract a file from the archive.
-
-        Args:
-            arc_engine_id: Engine ID ('arc_bz2')
+            arc_engine_id: Engine ID (must be 'arc_bz2')
             arc_name: Path to archive file
-            fname_in_arc: Name of file to extract
+            fname_in_arc: Name of file to extract (ignored for single-stream)
 
         Returns:
-            Extracted file data, or None on error
+            Decompressed file data, or None on error
         """
+        if arc_engine_id != self.engine_id:
+            return None
+
         try:
-            if arc_engine_id == "arc_bz2":
-                bfile = self.__get_handle(arc_name)
-                return bfile.read()
+            bfile = self.__get_handle(arc_name)
+            return bfile.read()
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting from %s: %s", arc_name, e)
 
         return None
 
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                bfile = self.handle[fname]
-                bfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)
-
-    def mkarc(self, arc_engine_id, arc_name, file_infos):
-        """Create a BZ2 archive.
+    def mkarc(self, arc_engine_id: str, arc_name: str, file_infos: List[Any]) -> bool:
+        """Create a BZ2 archive using custom BZ2File handler.
 
         Args:
-            arc_engine_id: Engine ID ('arc_bz2')
-            arc_name: Path to archive file
-            file_infos: List of file info structures
+            arc_engine_id: Engine ID (must be 'arc_bz2')
+            arc_name: Path for new archive
+            file_infos: List of file info (only first is used)
 
         Returns:
             True if successful, False otherwise
         """
-        if arc_engine_id != "arc_bz2":
+        if arc_engine_id != self.engine_id:
+            return False
+
+        if not file_infos:
             return False
 
         try:
-            bfile = BZ2File(arc_name, "w")
             file_info = file_infos[0]
+            source_name = file_info.get_filename()
 
-            rname = file_info.get_filename()
-            fsize = os.path.getsize(rname)
+            with open(source_name, "rb") as fp:
+                data = fp.read()
 
-            with open(rname, "rb") as fp:
-                data = fp.read(fsize)
-
+            bfile = BZ2File(arc_name, "w")
             bfile.write(data)
             bfile.close()
             return True
 
         except (IOError, OSError) as e:
-            logger.error("Archive creation IO error for %s: %s", arc_name, e)
+            self.logger.error("Archive creation IO error for %s: %s", arc_name, e)
         except Exception as e:
-            logger.error("Unexpected error creating archive %s: %s", arc_name, e)
+            self.logger.error("Unexpected error creating archive %s: %s", arc_name, e)
 
         return False

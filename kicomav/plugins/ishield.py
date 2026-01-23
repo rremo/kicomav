@@ -8,7 +8,6 @@ This plugin handles InstallShield format for scanning and manipulation.
 """
 
 import contextlib
-import logging
 import os
 import struct
 import zlib
@@ -17,11 +16,7 @@ from io import BytesIO
 from kicomav.plugins import cryptolib
 from kicomav.plugins import kavutil
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import ArchivePluginBase
-
-# Module logger
-logger = logging.getLogger(__name__)
-
+from kicomav.kavcore.k2plugin_base import ArchivePluginBase
 
 # -------------------------------------------------------------------------
 # InstallShield Functions
@@ -615,54 +610,12 @@ class KavMain(ArchivePluginBase):
         )
 
     def __get_handle(self, filename, data_off=0):
-        """Get or create handle for InstallShield file.
-
-        Args:
-            filename: Path to InstallShield file
-            data_off: Data offset
-
-        Returns:
-            InstallShield object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = InstallShield(filename, data_off)
-            self.handle[filename] = zfile
-            return zfile
-
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open InstallShield file %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error opening InstallShield file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for InstallShield file."""
+        return self._get_or_create_handle(filename, InstallShield, data_off)
 
     def __get_handle_setup_embedded_file(self, filename, data_off=0):
-        """Get or create handle for InstallShield embedded file.
-
-        Args:
-            filename: Path to file
-            data_off: Data offset
-
-        Returns:
-            InstallShieldSetupEmbeddedFile object or None
-        """
-        if filename in self.handle:
-            return self.handle.get(filename, None)
-
-        try:
-            zfile = InstallShieldSetupEmbeddedFile(filename, data_off)
-            self.handle[filename] = zfile
-            return zfile
-
-        except (IOError, OSError) as e:
-            logger.debug("Failed to open InstallShield embedded file %s: %s", filename, e)
-        except Exception as e:
-            logger.warning("Unexpected error opening InstallShield embedded file %s: %s", filename, e)
-
-        return None
+        """Get or create handle for InstallShield embedded file."""
+        return self._get_or_create_handle(filename, InstallShieldSetupEmbeddedFile, data_off)
 
     def arclist(self, filename, fileformat, password=None):
         """List files in the archive.
@@ -702,9 +655,9 @@ class KavMain(ArchivePluginBase):
                             file_scan_list.append(["arc_installshield_embedded_file", name])
 
         except (IOError, OSError) as e:
-            logger.debug("Archive list IO error for %s: %s", filename, e)
+            self.logger.debug("Archive list IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error listing archive %s: %s", filename, e)
+            self.logger.warning("Unexpected error listing archive %s: %s", filename, e)
 
         return file_scan_list
 
@@ -721,7 +674,7 @@ class KavMain(ArchivePluginBase):
         """
         # CWE-22: Path traversal prevention
         if not k2security.is_safe_archive_member(fname_in_arc):
-            logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
+            self.logger.warning("Unsafe archive member rejected: %s in %s", fname_in_arc, arc_name)
             return None
 
         try:
@@ -738,22 +691,8 @@ class KavMain(ArchivePluginBase):
                 return zfile.read(fname_in_arc)
 
         except (IOError, OSError) as e:
-            logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
+            self.logger.debug("Archive extract IO error for %s in %s: %s", fname_in_arc, arc_name, e)
         except Exception as e:
-            logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
+            self.logger.warning("Unexpected error extracting %s from %s: %s", fname_in_arc, arc_name, e)
 
         return None
-
-    def arcclose(self):
-        """Close all open archive handles."""
-        for fname in list(self.handle.keys()):
-            try:
-                zfile = self.handle.get(fname)
-                if zfile:
-                    zfile.close()
-            except (IOError, OSError) as e:
-                logger.debug("Archive close IO error for %s: %s", fname, e)
-            except Exception as e:
-                logger.debug("Archive close error for %s: %s", fname, e)
-            finally:
-                self.handle.pop(fname, None)

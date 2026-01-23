@@ -9,13 +9,9 @@ It detects files containing the dummy test pattern.
 """
 
 import os
-import logging
 from kicomav.plugins import kernel
 from kicomav.kavcore import k2security
-from kicomav.kavcore.plugin_base import MalwareDetectorBase
-
-# Module logger
-logger = logging.getLogger(__name__)
+from kicomav.kavcore.k2plugin_base import MalwareDetectorBase
 
 
 # -------------------------------------------------------------------------
@@ -64,7 +60,7 @@ class KavMain(MalwareDetectorBase):
         self.virus_names = [self.DUMMY_VIRUS_NAME]
 
         if self.verbose:
-            logger.info("Dummy plugin: Loaded %d signature(s)", len(self.virus_names))
+            self.logger.info("Dummy plugin: Loaded %d signature(s)", len(self.virus_names))
 
         return 0
 
@@ -83,13 +79,11 @@ class KavMain(MalwareDetectorBase):
             Tuple of (threat_found, threat_name, malware_id, scan_state)
         """
         try:
-            # Read file data
-            if hasattr(filehandle, "read"):
-                mm = filehandle.read(len(self.DUMMY_PATTERN))
-            elif isinstance(filehandle, bytes):
+            # Read file data using slicing (not read() which advances file pointer)
+            if filehandle is not None:
                 mm = filehandle[: len(self.DUMMY_PATTERN)]
             else:
-                # Try to open the file directly
+                # Fallback: open file directly if no filehandle provided
                 with open(filename, "rb") as fp:
                     mm = fp.read(len(self.DUMMY_PATTERN))
 
@@ -98,9 +92,9 @@ class KavMain(MalwareDetectorBase):
                 return True, self.DUMMY_VIRUS_NAME, kernel.DISINFECT_DELETE, kernel.INFECTED
 
         except (IOError, OSError) as e:
-            logger.debug("Scan IO error for %s: %s", filename, e)
+            self.logger.debug("Scan IO error for %s: %s", filename, e)
         except Exception as e:
-            logger.warning("Unexpected error scanning %s: %s", filename, e)
+            self.logger.warning("Unexpected error scanning %s: %s", filename, e)
 
         return False, "", kernel.DISINFECT_NONE, kernel.NOT_FOUND
 
@@ -127,9 +121,9 @@ class KavMain(MalwareDetectorBase):
             filename_dir = os.path.dirname(filename) or os.getcwd()
             return k2security.safe_remove_file(filename, filename_dir)
         except (IOError, OSError) as e:
-            logger.debug("Disinfect IO error for %s: %s", filename, e)
+            self.logger.debug("Disinfect IO error for %s: %s", filename, e)
         except k2security.SecurityError as e:
-            logger.warning("Disinfect security error for %s: %s", filename, e)
+            self.logger.warning("Disinfect security error for %s: %s", filename, e)
 
         return False
 
