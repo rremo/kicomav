@@ -7,9 +7,21 @@
 ![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)
 ![Platform](https://img.shields.io/badge/platform-mac-lightgrey.svg)<br>
 ![Language](https://img.shields.io/badge/Python-V3.10+-brightgreen)
-[![PyPI Downloads](https://static.pepy.tech/personalized-badge/kicomav?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=PyPI%20downloads)](https://pepy.tech/projects/kicomav)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/kicomav?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=PyPI%20downloads)](https://pepy.tech/projects/kicomav)<br>
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-brightgreen)](https://github.com/sponsors/hanul93)
 
 KicomAV is an open source antivirus engine designed for detecting malware and disinfecting it. This antivirus engine is created and maintained by [Kei Choi](http://www.hanul93.com).
+
+## Sponsorship
+
+KicomAV is maintained as a production-grade open-source antivirus engine.
+Sponsorship keeps the engine stable, continuously improved, and usable for real security work.
+
+**kicomav-x** is a high-performance experimental antivirus engine implemented in Rust.
+It is currently private due to its experimental nature.
+Once KicomAV reaches a sustainable sponsorship level, kicomav-x will be opened as part of the project.
+
+- Sponsor: https://github.com/sponsors/hanul93
 
 ## Features
 
